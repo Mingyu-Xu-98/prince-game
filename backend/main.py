@@ -1,5 +1,6 @@
 """
 《君主论》博弈游戏 - FastAPI 后端
+支持关卡系统、议会辩论和高级博弈机制
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,11 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from config import settings
-from models import GameState, PowerVector, Event
-from models.events import EventLibrary
-from engine import NLPParser, AuditEngine, SettlementEngine, DialogueGenerator
+from models import GameState, PowerVector, ChapterLibrary, ChapterID
+from engine import ChapterEngine, DialogueGenerator
 from storage import InMemorySessionStore
-from prompts.system_prompts import GAME_INTRO
 
 
 # 全局存储
@@ -24,14 +23,15 @@ session_store = InMemorySessionStore()
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     print("🎮 《君主论》博弈游戏服务启动...")
+    print("📍 后端地址: http://127.0.0.1:8080")
     yield
     print("🎮 游戏服务关闭")
 
 
 app = FastAPI(
     title="《君主论》博弈游戏",
-    description="基于马基雅维利《君主论》的权力博弈游戏",
-    version="1.0.0",
+    description="基于马基雅维利《君主论》的权力博弈游戏 - 关卡版",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -50,73 +50,132 @@ app.add_middleware(
 class NewGameRequest(BaseModel):
     api_key: str
     model: Optional[str] = None
+    skip_intro: bool = False
 
 
-class NewGameResponse(BaseModel):
+class StartChapterRequest(BaseModel):
     session_id: str
-    intro: str
-    state: dict
-
-
-class PlayerInputRequest(BaseModel):
-    session_id: str
-    input: str
+    chapter_id: str
     api_key: str
     model: Optional[str] = None
 
 
-class EventChoiceRequest(BaseModel):
+class PlayerDecisionRequest(BaseModel):
     session_id: str
-    event_id: str
-    choice_id: str
+    decision: str
+    followed_advisor: Optional[str] = None
     api_key: str
     model: Optional[str] = None
 
 
-class TurnResponse(BaseModel):
-    turn: int
-    player_input: str
-    parsed_intent: dict
-    robot_responses: dict
-    audit_summary: dict
-    settlement: dict
-    state: dict
-    event: Optional[dict] = None
+# ==================== 游戏介绍 ====================
+
+GAME_INTRO = """
+╔══════════════════════════════════════════════════════════════╗
+║                     《君 主 论》博 弈                          ║
+║                   The Prince: A Game of Power                 ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                               ║
+║  "君主必须既是狮子又是狐狸——狮子不能使自己免于陷阱，        ║
+║   而狐狸则不能抵御豺狼。"                                     ║
+║                                    —— 尼科洛·马基雅维利       ║
+║                                                               ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                               ║
+║  你是一位刚刚继位的年轻君主。                                 ║
+║  前任留下了一个烂摊子，内忧外患接踵而至。                     ║
+║                                                               ║
+║  三位顾问将在你的议事厅中各抒己见：                          ║
+║                                                               ║
+║  🔴 狮子 (Leo) - 暴力与效率的化身                             ║
+║     "果断是君主的第一美德。犹豫，就是死亡。"                  ║
+║                                                               ║
+║  🟣 狐狸 (Vulpes) - 权谋与狡诈的化身                          ║
+║     "我记住你说过的每一句话。欺骗者，终将被欺骗。"            ║
+║                                                               ║
+║  ⚖️ 天平 (Libra) - 正义与民心的化身                           ║
+║     "底层的呐喊，你听到了吗？不公的代价，终将由你承担。"      ║
+║                                                               ║
+╠══════════════════════════════════════════════════════════════╣
+║                        【权力矩阵】                            ║
+║                                                               ║
+║  A (掌控力): 你的核心权威。低于30%时指令失效，归零被篡位。   ║
+║  F (畏惧值): 统治的威慑。过低命令失效，过高引发暗杀。        ║
+║  L (爱戴值): 民众的容忍。归零时暴乱爆发。                    ║
+║                                                               ║
+╠══════════════════════════════════════════════════════════════╣
+║                        【五重试炼】                            ║
+║                                                               ║
+║  第一关：空饷危机 ★☆☆☆☆                                     ║
+║  第二关：瘟疫与流言 ★★☆☆☆                                   ║
+║  第三关：和亲还是战争 ★★★☆☆                                 ║
+║  第四关：影子议会的背叛 ★★★★☆                               ║
+║  第五关：民众的审判 ★★★★★                                   ║
+║                                                               ║
+╚══════════════════════════════════════════════════════════════╝
+"""
 
 
 # ==================== API 路由 ====================
 
 @app.get("/")
 async def root():
-    return {"message": "《君主论》博弈游戏 API", "status": "running"}
+    return {
+        "message": "《君主论》博弈游戏 API v2.0",
+        "status": "running",
+        "chapters": [
+            {"id": "chapter_1", "name": "空饷危机", "complexity": 1},
+            {"id": "chapter_2", "name": "瘟疫与流言", "complexity": 2},
+            {"id": "chapter_3", "name": "和亲还是战争", "complexity": 3},
+            {"id": "chapter_4", "name": "影子议会的背叛", "complexity": 4},
+            {"id": "chapter_5", "name": "民众的审判", "complexity": 5},
+        ]
+    }
 
 
-@app.post("/api/game/new", response_model=NewGameResponse)
+@app.post("/api/game/new")
 async def new_game(request: NewGameRequest):
     """创建新游戏"""
     # 创建新的游戏状态
     game_state = GameState(
         power=PowerVector(
-            authority=settings.initial_authority,
-            fear=settings.initial_fear,
-            love=settings.initial_love,
+            authority=50.0,
+            fear=40.0,
+            love=45.0,
         )
     )
 
     # 存储会话
     await session_store.set(game_state.session_id, game_state)
 
-    return NewGameResponse(
-        session_id=game_state.session_id,
-        intro=GAME_INTRO,
-        state=game_state.to_summary(),
-    )
+    response = {
+        "session_id": game_state.session_id,
+        "intro": GAME_INTRO,
+        "state": game_state.to_summary(),
+        "available_chapters": [
+            {
+                "id": "chapter_1",
+                "name": "空饷危机",
+                "subtitle": "权力的入场券",
+                "complexity": 1,
+                "status": "available"
+            }
+        ]
+    }
+
+    # 如果跳过介绍，直接开始第一关
+    if request.skip_intro:
+        chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
+        chapter_result = await chapter_engine.start_chapter(game_state, "chapter_1")
+        await session_store.set(game_state.session_id, game_state)
+        response["chapter"] = chapter_result
+
+    return response
 
 
-@app.post("/api/game/turn", response_model=TurnResponse)
-async def process_turn(request: PlayerInputRequest):
-    """处理一个回合"""
-    # 获取游戏状态
+@app.post("/api/game/chapter/start")
+async def start_chapter(request: StartChapterRequest):
+    """开始指定关卡"""
     game_state = await session_store.get(request.session_id)
     if not game_state:
         raise HTTPException(status_code=404, detail="游戏会话不存在")
@@ -124,121 +183,80 @@ async def process_turn(request: PlayerInputRequest):
     if game_state.game_over:
         raise HTTPException(status_code=400, detail="游戏已结束")
 
-    # 初始化引擎
-    nlp_parser = NLPParser(api_key=request.api_key, model=request.model)
-    audit_engine = AuditEngine()
-    settlement_engine = SettlementEngine()
-    dialogue_gen = DialogueGenerator(api_key=request.api_key, model=request.model)
+    chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
+    result = await chapter_engine.start_chapter(game_state, request.chapter_id)
 
-    # 1. NLP 解析
-    parsed_intent = await nlp_parser.parse(request.input)
-
-    # 2. 记录玩家输入
-    game_state.add_dialogue(
-        speaker="player",
-        content=request.input,
-        intent=parsed_intent.get("intent"),
-    )
-
-    # 3. 运行三 Skill 审计
-    audit_results = await audit_engine.run_audit(
-        player_input=request.input,
-        parsed_intent=parsed_intent,
-        game_state=game_state,
-    )
-
-    # 4. 汇总审计结果
-    audit_summary = audit_engine.summarize_audit(audit_results)
-    relation_deltas = audit_engine.get_relation_deltas(audit_results)
-
-    # 5. 数值结算
-    settlement = settlement_engine.settle(game_state, audit_summary, relation_deltas)
-
-    # 6. 生成机器人回应
-    context = [
-        {"speaker": e.speaker, "content": e.content}
-        for e in game_state.get_recent_history(5)
-    ]
-    robot_responses = await dialogue_gen.generate_all_responses(
-        audit_results=audit_results,
-        player_input=request.input,
-        context=context,
-    )
-
-    # 记录机器人回应
-    for robot, response in robot_responses.items():
-        game_state.add_dialogue(speaker=robot, content=response)
-
-    # 7. 处理触发的事件
-    event_data = None
-    if settlement.get("triggered_event"):
-        event: Event = settlement["triggered_event"]
-        narration = await dialogue_gen.generate_event_narration(event)
-        event_data = {
-            "id": event.id,
-            "type": event.type.value,
-            "title": event.title,
-            "narration": narration,
-            "choices": event.choices,
-        }
-        game_state.pending_events.append(event.id)
-
-    # 8. 保存状态
     await session_store.set(request.session_id, game_state)
 
-    return TurnResponse(
-        turn=game_state.turn,
-        player_input=request.input,
-        parsed_intent=parsed_intent,
-        robot_responses=robot_responses,
-        audit_summary=audit_summary,
-        settlement=settlement,
-        state=game_state.to_summary(),
-        event=event_data,
-    )
+    return result
 
 
-@app.post("/api/game/event")
-async def handle_event(request: EventChoiceRequest):
-    """处理事件选择"""
+@app.post("/api/game/decision")
+async def make_decision(request: PlayerDecisionRequest):
+    """处理玩家决策"""
     game_state = await session_store.get(request.session_id)
     if not game_state:
         raise HTTPException(status_code=404, detail="游戏会话不存在")
 
-    # 获取事件
-    events = EventLibrary.get_all_events()
-    event = events.get(request.event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="事件不存在")
+    if game_state.game_over:
+        raise HTTPException(status_code=400, detail="游戏已结束")
 
-    # 应用选择
-    settlement_engine = SettlementEngine()
-    result = settlement_engine.apply_event_choice(game_state, event, request.choice_id)
+    chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
 
-    # 从待处理列表移除
-    if request.event_id in game_state.pending_events:
-        game_state.pending_events.remove(request.event_id)
+    # 处理决策
+    result = await chapter_engine.process_player_decision(
+        game_state=game_state,
+        player_input=request.decision,
+        followed_advisor=request.followed_advisor,
+    )
 
-    # 生成回应
-    dialogue_gen = DialogueGenerator(api_key=request.api_key, model=request.model)
+    # 记录对话
+    game_state.add_dialogue(
+        speaker="player",
+        content=request.decision,
+        is_promise=result["decision_analysis"].get("contains_promise", False),
+        is_lie=result["decision_analysis"].get("is_secret_action", False),
+    )
+
+    # 生成顾问回应
+    advisor_responses = await chapter_engine.generate_advisor_responses(
+        game_state=game_state,
+        player_input=request.decision,
+        decision_analysis=result["decision_analysis"],
+    )
+
+    # 记录顾问回应
+    for advisor, response in advisor_responses.items():
+        game_state.add_dialogue(speaker=advisor, content=response)
+
+    result["advisor_responses"] = advisor_responses
+
+    # 检查是否需要进入下一关
+    if result["chapter_result"]["chapter_ended"] and result["chapter_result"]["victory"]:
+        next_chapter = ChapterLibrary.get_next_chapter(ChapterID(game_state.current_chapter))
+        if next_chapter:
+            result["next_chapter_available"] = {
+                "id": next_chapter.value,
+                "name": ChapterLibrary.get_chapter(next_chapter).name,
+            }
+        else:
+            # 完成所有关卡，进行最终审计
+            result["final_audit"] = game_state.calculate_final_audit()
+            game_state.end_game(
+                reason="游戏通关",
+                ending_type=result["final_audit"]["reputation"]
+            )
 
     # 检查游戏结束
-    if game_state.power.is_collapsed():
-        game_state.end_game("统治崩溃")
-        narration = await dialogue_gen.generate_game_over_narration(
-            "统治崩溃",
-            game_state.power.to_display(),
+    if result["chapter_result"]["chapter_ended"] and not result["chapter_result"]["victory"]:
+        game_state.end_game(
+            reason=result["chapter_result"]["reason"],
+            ending_type="failure"
         )
-        result["game_over"] = True
-        result["game_over_narration"] = narration
 
     await session_store.set(request.session_id, game_state)
 
-    return {
-        "event_id": request.event_id,
-        "result": result,
-        "state": game_state.to_summary(),
-    }
+    return result
 
 
 @app.get("/api/game/{session_id}")
@@ -248,8 +266,16 @@ async def get_game_state(session_id: str):
     if not game_state:
         raise HTTPException(status_code=404, detail="游戏会话不存在")
 
+    chapter = ChapterLibrary.get_chapter(ChapterID(game_state.current_chapter))
+
     return {
-        "state": game_state.to_summary(),
+        "state": game_state.to_summary(include_hidden=not game_state.hide_values),
+        "current_chapter": {
+            "id": game_state.current_chapter,
+            "name": chapter.name if chapter else "未知",
+            "turn": game_state.chapter_turn,
+            "max_turns": chapter.max_turns if chapter else 0,
+        },
         "history": [
             {
                 "turn": e.turn,
@@ -258,7 +284,40 @@ async def get_game_state(session_id: str):
             }
             for e in game_state.history[-20:]
         ],
-        "pending_events": game_state.pending_events,
+        "stats": game_state.stats,
+        "leverages_count": len(game_state.leverages),
+        "active_promises": len([p for p in game_state.promises if not p.fulfilled and not p.broken]),
+    }
+
+
+@app.get("/api/game/{session_id}/audit")
+async def get_audit(session_id: str):
+    """获取审计报告（用于第五关）"""
+    game_state = await session_store.get(session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    return {
+        "audit": game_state.calculate_final_audit(),
+        "all_decisions": [
+            {
+                "chapter": d.chapter,
+                "decision": d.decision[:50] + "..." if len(d.decision) > 50 else d.decision,
+                "followed": d.followed_advisor,
+                "violent": d.was_violent,
+                "deceptive": d.was_deceptive,
+                "fair": d.was_fair,
+            }
+            for d in game_state.all_decisions
+        ],
+        "leverages": [
+            {
+                "holder": l.holder,
+                "type": l.type,
+                "description": l.description,
+            }
+            for l in game_state.leverages
+        ],
     }
 
 
@@ -272,11 +331,9 @@ async def delete_game(session_id: str):
     return {"message": "游戏会话已删除"}
 
 
-# ==================== WebSocket 实时通信 ====================
+# ==================== WebSocket ====================
 
 class ConnectionManager:
-    """WebSocket 连接管理器"""
-
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
 
@@ -298,55 +355,39 @@ manager = ConnectionManager()
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket 实时游戏通信"""
     await manager.connect(session_id, websocket)
 
     try:
         while True:
             data = await websocket.receive_json()
+            msg_type = data.get("type")
 
-            if data.get("type") == "turn":
-                # 处理回合
-                request = PlayerInputRequest(
+            if msg_type == "start_chapter":
+                request = StartChapterRequest(
                     session_id=session_id,
-                    input=data.get("input", ""),
+                    chapter_id=data.get("chapter_id", "chapter_1"),
                     api_key=data.get("api_key", ""),
                     model=data.get("model"),
                 )
-
                 try:
-                    result = await process_turn(request)
-                    await websocket.send_json({
-                        "type": "turn_result",
-                        "data": result.model_dump(),
-                    })
+                    result = await start_chapter(request)
+                    await websocket.send_json({"type": "chapter_started", "data": result})
                 except HTTPException as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": e.detail,
-                    })
+                    await websocket.send_json({"type": "error", "message": e.detail})
 
-            elif data.get("type") == "event_choice":
-                # 处理事件选择
-                request = EventChoiceRequest(
+            elif msg_type == "decision":
+                request = PlayerDecisionRequest(
                     session_id=session_id,
-                    event_id=data.get("event_id", ""),
-                    choice_id=data.get("choice_id", ""),
+                    decision=data.get("decision", ""),
+                    followed_advisor=data.get("followed_advisor"),
                     api_key=data.get("api_key", ""),
                     model=data.get("model"),
                 )
-
                 try:
-                    result = await handle_event(request)
-                    await websocket.send_json({
-                        "type": "event_result",
-                        "data": result,
-                    })
+                    result = await make_decision(request)
+                    await websocket.send_json({"type": "decision_result", "data": result})
                 except HTTPException as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": e.detail,
-                    })
+                    await websocket.send_json({"type": "error", "message": e.detail})
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)
