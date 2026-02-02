@@ -6,3 +6,4 @@ export { GameBoard } from './GameBoard';
 export { SetupScreen } from './SetupScreen';
 export { ChapterSelect } from './ChapterSelect';
 export { FinalAuditPanel } from './FinalAuditPanel';
+export { LensSelection } from './LensSelection';

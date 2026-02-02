@@ -187,6 +187,9 @@ class GameState(BaseModel):
     # 黑箱模式
     hide_values: bool = False
 
+    # 观测透镜（新裁决系统）
+    observation_lens: Optional[str] = None  # suspicion / expansion / balance
+
     # ==================== 承诺系统 ====================
 
     def make_promise(

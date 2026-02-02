@@ -1,5 +1,5 @@
 import { useGameState } from './hooks/useGameState';
-import { SetupScreen, GameBoard, ChapterSelect, FinalAuditPanel } from './components';
+import { SetupScreen, GameBoard, ChapterSelect, FinalAuditPanel, LensSelection } from './components';
 
 function App() {
   const {
@@ -12,17 +12,26 @@ function App() {
     error,
     intro,
     finalAudit,
+    // 新裁决系统状态
+    gamePhase,
+    initializationScene,
+    lensChoices,
+    selectedLens,
+    mountainView,
+    // API Key 配置
     apiKey,
     setApiKey,
     model,
     setModel,
+    // 操作
     startNewGame,
+    selectObservationLens,
     startChapter,
     submitDecision,
   } = useGameState();
 
   // 如果没有开始游戏，显示设置界面
-  if (!sessionId || !gameState) {
+  if (!sessionId || !gameState || gamePhase === 'setup') {
     return (
       <SetupScreen
         apiKey={apiKey}
@@ -32,6 +41,18 @@ function App() {
         onStartGame={startNewGame}
         isLoading={isLoading}
         error={error}
+      />
+    );
+  }
+
+  // 观测透镜选择阶段
+  if (gamePhase === 'lens_selection') {
+    return (
+      <LensSelection
+        scene={initializationScene}
+        lensChoices={lensChoices}
+        onSelect={selectObservationLens}
+        isLoading={isLoading}
       />
     );
   }
@@ -79,7 +100,18 @@ function App() {
               backgroundColor: '#1a1a2e',
               borderRadius: '4px',
             }}>
-              📜 {currentChapter.chapter_name} - 回合 {currentChapter.current_turn}/{currentChapter.max_turns}
+              📜 {currentChapter.name} - 回合 {currentChapter.current_turn}/{currentChapter.max_turns}
+            </span>
+          )}
+          {selectedLens && (
+            <span style={{
+              color: '#9b59b6',
+              fontSize: '12px',
+              padding: '4px 8px',
+              backgroundColor: '#1a1a2e',
+              borderRadius: '4px',
+            }}>
+              🔮 {selectedLens === 'suspicion' ? '怀疑' : selectedLens === 'expansion' ? '扩张' : '平衡'}透镜
             </span>
           )}
           <span style={{
@@ -127,6 +159,7 @@ function App() {
           gameState={gameState}
           onSelectChapter={startChapter}
           isLoading={isLoading}
+          mountainView={mountainView}
         />
       ) : (
         /* 游戏主面板 */

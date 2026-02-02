@@ -8,6 +8,7 @@ interface ChapterSelectProps {
   gameState: GameState;
   onSelectChapter: (chapterId: string) => void;
   isLoading: boolean;
+  mountainView?: string;
 }
 
 export function ChapterSelect({
@@ -16,6 +17,7 @@ export function ChapterSelect({
   gameState,
   onSelectChapter,
   isLoading,
+  mountainView,
 }: ChapterSelectProps) {
   const getComplexityStars = (complexity: number) => {
     return '★'.repeat(complexity) + '☆'.repeat(5 - complexity);
@@ -47,6 +49,29 @@ export function ChapterSelect({
       maxWidth: '1200px',
       margin: '0 auto',
     }}>
+      {/* 山峰视图（如果有）*/}
+      {mountainView && (
+        <div style={{
+          backgroundColor: '#0f0f1a',
+          border: '1px solid #333',
+          borderRadius: '12px',
+          padding: '16px',
+          marginBottom: '24px',
+          fontFamily: 'monospace',
+          overflow: 'auto',
+        }}>
+          <pre style={{
+            color: '#00ff88',
+            whiteSpace: 'pre',
+            margin: 0,
+            fontSize: '11px',
+            lineHeight: '1.3',
+          }}>
+            {mountainView}
+          </pre>
+        </div>
+      )}
+
       {/* 游戏介绍 */}
       <div style={{
         backgroundColor: '#0f0f1a',

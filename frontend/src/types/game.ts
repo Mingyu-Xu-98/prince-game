@@ -1,4 +1,4 @@
-// 游戏类型定义 - 支持关卡系统
+// 游戏类型定义 - 支持关卡系统和新裁决系统
 
 export interface PowerValue {
   value: number;
@@ -19,6 +19,54 @@ export interface RobotRelation {
   will_betray: boolean;
 }
 
+// 观测透镜选项
+export interface ObservationLensChoice {
+  name: string;
+  description: string;
+  effect: string;
+  warning: string;
+}
+
+// 初始化场景响应
+export interface InitializationScene {
+  scene: string;
+  lens_choices: Record<string, ObservationLensChoice>;
+  mountain_view: string;
+}
+
+// 裁决元数据
+export interface JudgmentMetadata {
+  player_strategy: string;
+  machiavelli_traits: string[];
+  machiavelli_critique: string;
+  outcome_level: string;
+  consequence: string;
+}
+
+// 因果种子
+export interface CausalSeedInfo {
+  action_type: string;
+  description: string;
+  severity: number;
+  warning: string;
+}
+
+// 因果回响
+export interface EchoTriggered {
+  source_chapter: number;
+  source_turn: number;
+  action_type: string;
+  description: string;
+  echo_message: string;
+  crisis: string;
+}
+
+// 顾问状态变化
+export interface AdvisorChangeInfo {
+  status: string;
+  warning: string;
+}
+
 export interface GameState {
   session_id: string;
   current_chapter: string;
@@ -36,6 +84,7 @@ export interface GameState {
   warnings: string[];
   game_over: boolean;
   game_over_reason: string | null;
+  observation_lens?: string;  // 观测透镜
 }
 
 // 关卡相关
@@ -127,6 +176,12 @@ export interface DecisionResult {
     name: string;
   };
   final_audit?: FinalAudit;
+
+  // 新裁决系统字段
+  judgment_metadata?: JudgmentMetadata;
+  causal_seed?: CausalSeedInfo;
+  echo_triggered?: EchoTriggered;
+  advisor_changes?: Record<string, AdvisorChangeInfo>;
 }
 
 export interface FinalAudit {

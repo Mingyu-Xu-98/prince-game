@@ -1,8 +1,11 @@
-// 游戏状态管理 Hook - 支持关卡系统
+// 游戏状态管理 Hook - 支持关卡系统和新裁决系统
 
 import { useState, useCallback } from 'react';
-import type { GameState, ChapterScene, DecisionResult, DialogueEntry, ChapterInfo, FinalAudit } from '../types/game';
+import type { GameState, ChapterScene, DecisionResult, DialogueEntry, ChapterInfo, FinalAudit, ObservationLensChoice, JudgmentMetadata } from '../types/game';
 import { gameApi } from '../api/gameApi';
+
+// 游戏阶段
+type GamePhase = 'setup' | 'lens_selection' | 'chapter_select' | 'playing' | 'ended';
 
 interface UseGameStateReturn {
   // 状态
@@ -17,6 +20,14 @@ interface UseGameStateReturn {
   lastDecisionResult: DecisionResult | null;
   finalAudit: FinalAudit | null;
 
+  // 新裁决系统状态
+  gamePhase: GamePhase;
+  initializationScene: string;
+  lensChoices: Record<string, ObservationLensChoice>;
+  selectedLens: string | null;
+  mountainView: string;
+  lastJudgment: JudgmentMetadata | null;
+
   // API Key 配置
   apiKey: string;
   setApiKey: (key: string) => void;
@@ -25,6 +36,7 @@ interface UseGameStateReturn {
 
   // 操作
   startNewGame: () => Promise<void>;
+  selectObservationLens: (lens: string) => Promise<void>;
   startChapter: (chapterId: string) => Promise<void>;
   submitDecision: (input: string, followedAdvisor?: string) => Promise<DecisionResult | null>;
   clearError: () => void;
@@ -44,6 +56,14 @@ export function useGameState(): UseGameStateReturn {
   const [intro, setIntro] = useState<string>('');
   const [lastDecisionResult, setLastDecisionResult] = useState<DecisionResult | null>(null);
   const [finalAudit, setFinalAudit] = useState<FinalAudit | null>(null);
+
+  // 新裁决系统状态
+  const [gamePhase, setGamePhase] = useState<GamePhase>('setup');
+  const [initializationScene, setInitializationScene] = useState<string>('');
+  const [lensChoices, setLensChoices] = useState<Record<string, ObservationLensChoice>>({});
+  const [selectedLens, setSelectedLens] = useState<string | null>(null);
+  const [mountainView, setMountainView] = useState<string>('');
+  const [lastJudgment, setLastJudgment] = useState<JudgmentMetadata | null>(null);
 
   // UI 状态
   const [isLoading, setIsLoading] = useState(false);
@@ -80,12 +100,59 @@ export function useGameState(): UseGameStateReturn {
       setCurrentChapter(null);
       setLastDecisionResult(null);
       setFinalAudit(null);
+
+      // 新裁决系统初始化
+      setInitializationScene(response.initialization_scene || '');
+      setLensChoices(response.lens_choices || {});
+      setSelectedLens(null);
+      setLastJudgment(null);
+
+      // 判断是否需要选择观测透镜
+      if (response.requires_lens_selection) {
+        setGamePhase('lens_selection');
+      } else {
+        setGamePhase('chapter_select');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建游戏失败');
     } finally {
       setIsLoading(false);
     }
   }, [apiKey, model]);
+
+  // 选择观测透镜
+  const selectObservationLens = useCallback(async (lens: string) => {
+    if (!sessionId || !apiKey) {
+      setError('游戏未开始');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await gameApi.setObservationLens(sessionId, lens);
+      setSelectedLens(lens);
+      setMountainView(response.mountain_view);
+
+      // 添加选择记录到对话历史
+      setDialogueHistory(prev => [
+        ...prev,
+        {
+          turn: 0,
+          speaker: 'system',
+          content: `🔮 ${response.message}\n\n效果: ${response.selected_lens.effect}`
+        }
+      ]);
+
+      // 进入关卡选择阶段
+      setGamePhase('chapter_select');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '设置观测透镜失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [sessionId, apiKey]);
 
   // 开始关卡
   const startChapter = useCallback(async (chapterId: string) => {
@@ -101,6 +168,7 @@ export function useGameState(): UseGameStateReturn {
       const response = await gameApi.startChapter(sessionId, chapterId, apiKey, model || undefined);
       setCurrentChapter(response.chapter);
       setGameState(response.state);
+      setGamePhase('playing');
 
       // 添加开场叙事到对话历史
       setDialogueHistory(prev => [
@@ -191,6 +259,45 @@ export function useGameState(): UseGameStateReturn {
         });
       }
 
+      // 新裁决系统：裁决元数据
+      if (result.judgment_metadata) {
+        setLastJudgment(result.judgment_metadata);
+        newEntries.push({
+          turn: result.turn,
+          speaker: 'system',
+          content: `📊 【裁决】\n策略: ${result.judgment_metadata.player_strategy}\n特质: ${result.judgment_metadata.machiavelli_traits.join(', ')}\n结局等级: ${result.judgment_metadata.outcome_level}\n\n📜 马基雅维利曰: "${result.judgment_metadata.machiavelli_critique}"`
+        });
+      }
+
+      // 因果种子警告
+      if (result.causal_seed) {
+        newEntries.push({
+          turn: result.turn,
+          speaker: 'system',
+          content: `🌱 【因果种子】\n${result.causal_seed.description}\n\n${result.causal_seed.warning}`
+        });
+      }
+
+      // 因果回响触发
+      if (result.echo_triggered) {
+        newEntries.push({
+          turn: result.turn,
+          speaker: 'system',
+          content: `⚡ 【因果回响】\n${result.echo_triggered.echo_message}\n\n来源: 第${result.echo_triggered.source_chapter}关 第${result.echo_triggered.source_turn}回合\n\n💀 ${result.echo_triggered.crisis}`
+        });
+      }
+
+      // 顾问状态变化
+      if (result.advisor_changes) {
+        Object.entries(result.advisor_changes).forEach(([advisor, change]) => {
+          newEntries.push({
+            turn: result.turn,
+            speaker: 'system',
+            content: `🔄 【顾问异化】\n${advisor} ${change.status}\n⚠️ ${change.warning}`
+          });
+        });
+      }
+
       // 如果泄露了秘密
       if (result.secret_leaked) {
         newEntries.push({
@@ -272,11 +379,21 @@ export function useGameState(): UseGameStateReturn {
     intro,
     lastDecisionResult,
     finalAudit,
+    // 新裁决系统状态
+    gamePhase,
+    initializationScene,
+    lensChoices,
+    selectedLens,
+    mountainView,
+    lastJudgment,
+    // API Key 配置
     apiKey,
     setApiKey: handleSetApiKey,
     model,
     setModel: handleSetModel,
+    // 操作
     startNewGame,
+    selectObservationLens,
     startChapter,
     submitDecision,
     clearError,

@@ -1,14 +1,30 @@
-// 游戏 API 客户端 - 支持关卡系统
+// 游戏 API 客户端 - 支持关卡系统和新裁决系统
 
-import type { GameState, ChapterScene, DecisionResult, ChapterInfo, FinalAudit, CouncilDebate } from '../types/game';
+import type { GameState, ChapterScene, DecisionResult, ChapterInfo, FinalAudit, CouncilDebate, InitializationScene, ObservationLensChoice } from '../types/game';
 
 const API_BASE = '/api';
 
 interface NewGameResponse {
   session_id: string;
   intro: string;
+  initialization_scene: string;
+  lens_choices: Record<string, ObservationLensChoice>;
   state: GameState;
   available_chapters: ChapterInfo[];
+  requires_lens_selection: boolean;
+}
+
+interface SetLensResponse {
+  success: boolean;
+  selected_lens: {
+    key: string;
+    name: string;
+    description: string;
+    effect: string;
+  };
+  message: string;
+  mountain_view: string;
+  next_step: string;
 }
 
 // API 返回的原始关卡响应
@@ -36,6 +52,20 @@ interface StartChapterResponse {
 
 export const gameApi = {
   /**
+   * 获取初始化场景
+   */
+  async getInitializationScene(): Promise<InitializationScene> {
+    const response = await fetch(`${API_BASE}/game/initialization`);
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '获取初始化场景失败');
+    }
+
+    return response.json();
+  },
+
+  /**
    * 创建新游戏
    */
   async newGame(apiKey: string, model?: string, skipIntro: boolean = false): Promise<NewGameResponse> {
@@ -52,6 +82,27 @@ export const gameApi = {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }));
       throw new Error(error.detail || '创建游戏失败');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * 设置观测透镜
+   */
+  async setObservationLens(sessionId: string, lens: string): Promise<SetLensResponse> {
+    const response = await fetch(`${API_BASE}/game/lens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        lens,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '设置观测透镜失败');
     }
 
     return response.json();
