@@ -3,8 +3,9 @@
 interface RobotCardProps {
   type: 'lion' | 'fox' | 'balance';
   response: string;
-  relation?: { trust: number; hatred: number; is_hostile: boolean };
+  relation?: { trust: number; loyalty: number; is_hostile: boolean; will_betray: boolean };
   assessment?: string;
+  compact?: boolean;
 }
 
 const ROBOT_CONFIG = {
@@ -19,8 +20,8 @@ const ROBOT_CONFIG = {
     icon: '🦊',
     name: '狐狸',
     title: '权谋与狡诈',
-    color: '#f97316',
-    bgColor: '#2d2015',
+    color: '#a855f7',
+    bgColor: '#1a1a2d',
   },
   balance: {
     icon: '⚖️',
@@ -31,8 +32,46 @@ const ROBOT_CONFIG = {
   },
 };
 
-export function RobotCard({ type, response, relation, assessment }: RobotCardProps) {
+export function RobotCard({ type, response, relation, assessment, compact = false }: RobotCardProps) {
   const config = ROBOT_CONFIG[type];
+
+  // 紧凑模式 - 只显示关系状态
+  if (compact) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '8px 0',
+        borderBottom: '1px solid #333',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '16px' }}>{config.icon}</span>
+          <span style={{ color: config.color, fontSize: '13px' }}>{config.name}</span>
+        </div>
+        {relation && (
+          <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
+            <span style={{
+              color: relation.trust > 50 ? '#4ade80' : relation.trust > 30 ? '#ffd700' : '#ef4444',
+            }}>
+              信任 {relation.trust.toFixed(0)}
+            </span>
+            <span style={{
+              color: relation.loyalty > 50 ? '#4ade80' : relation.loyalty > 30 ? '#ffd700' : '#ef4444',
+            }}>
+              忠诚 {relation.loyalty.toFixed(0)}
+            </span>
+            {relation.is_hostile && (
+              <span style={{ color: '#ef4444' }}>⚠️敌对</span>
+            )}
+            {relation.will_betray && (
+              <span style={{ color: '#a855f7' }}>🗡️背叛</span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -63,9 +102,15 @@ export function RobotCard({ type, response, relation, assessment }: RobotCardPro
           <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
             <div style={{
               fontSize: '11px',
-              color: relation.trust > 0 ? '#22c55e' : relation.trust < 0 ? '#ef4444' : '#888',
+              color: relation.trust > 50 ? '#22c55e' : relation.trust > 30 ? '#ffd700' : '#ef4444',
             }}>
-              信任: {relation.trust > 0 ? '+' : ''}{relation.trust.toFixed(0)}
+              信任: {relation.trust.toFixed(0)}
+            </div>
+            <div style={{
+              fontSize: '11px',
+              color: relation.loyalty > 50 ? '#22c55e' : relation.loyalty > 30 ? '#ffd700' : '#ef4444',
+            }}>
+              忠诚: {relation.loyalty.toFixed(0)}
             </div>
             {relation.is_hostile && (
               <div style={{ fontSize: '11px', color: '#ef4444' }}>
@@ -77,17 +122,19 @@ export function RobotCard({ type, response, relation, assessment }: RobotCardPro
       </div>
 
       {/* 回应内容 */}
-      <div style={{
-        color: '#e0e0e0',
-        fontSize: '14px',
-        lineHeight: '1.6',
-        padding: '12px',
-        backgroundColor: '#00000030',
-        borderRadius: '4px',
-        whiteSpace: 'pre-wrap',
-      }}>
-        {response || '...'}
-      </div>
+      {response && (
+        <div style={{
+          color: '#e0e0e0',
+          fontSize: '14px',
+          lineHeight: '1.6',
+          padding: '12px',
+          backgroundColor: '#00000030',
+          borderRadius: '4px',
+          whiteSpace: 'pre-wrap',
+        }}>
+          {response}
+        </div>
+      )}
 
       {/* 评估摘要 */}
       {assessment && (

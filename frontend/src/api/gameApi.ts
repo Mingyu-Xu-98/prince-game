@@ -1,6 +1,6 @@
-// 游戏 API 客户端
+// 游戏 API 客户端 - 支持关卡系统
 
-import type { GameState, TurnResult, GameEvent } from '../types/game';
+import type { GameState, ChapterScene, DecisionResult, ChapterInfo, FinalAudit, CouncilDebate } from '../types/game';
 
 const API_BASE = '/api';
 
@@ -8,18 +8,29 @@ interface NewGameResponse {
   session_id: string;
   intro: string;
   state: GameState;
+  available_chapters: ChapterInfo[];
 }
 
-interface EventResponse {
-  event_id: string;
-  result: {
-    choice_made: string;
-    impact: { authority: number; fear: number; love: number };
-    new_power: { authority: { value: number }; fear: { value: number }; love: { value: number }; total: number };
-    warnings: string[];
-    game_over?: boolean;
-    game_over_narration?: string;
+// API 返回的原始关卡响应
+interface StartChapterApiResponse {
+  chapter: {
+    id: string;
+    name: string;
+    subtitle: string;
+    complexity: number;
+    max_turns: number;
   };
+  background: string;
+  scene_snapshot: string;
+  dilemma: string;
+  opening_narration: string;
+  council_debate: CouncilDebate;
+  state: GameState;
+}
+
+// 转换后的响应
+interface StartChapterResponse {
+  chapter: ChapterScene;
   state: GameState;
 }
 
@@ -27,35 +38,40 @@ export const gameApi = {
   /**
    * 创建新游戏
    */
-  async newGame(apiKey: string, model?: string): Promise<NewGameResponse> {
+  async newGame(apiKey: string, model?: string, skipIntro: boolean = false): Promise<NewGameResponse> {
     const response = await fetch(`${API_BASE}/game/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey, model }),
+      body: JSON.stringify({
+        api_key: apiKey,
+        model,
+        skip_intro: skipIntro
+      }),
     });
 
     if (!response.ok) {
-      throw new Error(`创建游戏失败: ${response.statusText}`);
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '创建游戏失败');
     }
 
     return response.json();
   },
 
   /**
-   * 处理一个回合
+   * 开始指定关卡
    */
-  async processTurn(
+  async startChapter(
     sessionId: string,
-    input: string,
+    chapterId: string,
     apiKey: string,
     model?: string
-  ): Promise<TurnResult> {
-    const response = await fetch(`${API_BASE}/game/turn`, {
+  ): Promise<StartChapterResponse> {
+    const response = await fetch(`${API_BASE}/game/chapter/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
-        input,
+        chapter_id: chapterId,
         api_key: apiKey,
         model,
       }),
@@ -63,29 +79,50 @@ export const gameApi = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || '处理回合失败');
+      throw new Error(error.detail || '开始关卡失败');
     }
 
-    return response.json();
+    const data: StartChapterApiResponse = await response.json();
+
+    // 转换为前端使用的格式
+    const chapter: ChapterScene = {
+      id: data.chapter.id,
+      name: data.chapter.name,
+      subtitle: data.chapter.subtitle,
+      complexity: data.chapter.complexity,
+      max_turns: data.chapter.max_turns,
+      current_turn: data.state.chapter_turn,
+      background: data.background,
+      scene_snapshot: data.scene_snapshot,
+      dilemma: data.dilemma,
+      opening_narration: data.opening_narration,
+      council_debate: data.council_debate,
+      hide_values: false, // 从 state 获取或默认
+    };
+
+    return {
+      chapter,
+      state: data.state,
+    };
   },
 
   /**
-   * 处理事件选择
+   * 提交玩家决策
    */
-  async handleEvent(
+  async submitDecision(
     sessionId: string,
-    eventId: string,
-    choiceId: string,
+    decision: string,
     apiKey: string,
-    model?: string
-  ): Promise<EventResponse> {
-    const response = await fetch(`${API_BASE}/game/event`, {
+    model?: string,
+    followedAdvisor?: string
+  ): Promise<DecisionResult> {
+    const response = await fetch(`${API_BASE}/game/decision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
-        event_id: eventId,
-        choice_id: choiceId,
+        decision,
+        followed_advisor: followedAdvisor,
         api_key: apiKey,
         model,
       }),
@@ -93,7 +130,7 @@ export const gameApi = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || '处理事件失败');
+      throw new Error(error.detail || '处理决策失败');
     }
 
     return response.json();
@@ -102,7 +139,19 @@ export const gameApi = {
   /**
    * 获取游戏状态
    */
-  async getGameState(sessionId: string): Promise<{ state: GameState; history: any[]; pending_events: string[] }> {
+  async getGameState(sessionId: string): Promise<{
+    state: GameState;
+    current_chapter: {
+      id: string;
+      name: string;
+      turn: number;
+      max_turns: number;
+    };
+    history: any[];
+    stats: any;
+    leverages_count: number;
+    active_promises: number;
+  }> {
     const response = await fetch(`${API_BASE}/game/${sessionId}`);
 
     if (!response.ok) {
@@ -110,5 +159,35 @@ export const gameApi = {
     }
 
     return response.json();
+  },
+
+  /**
+   * 获取审计报告
+   */
+  async getAudit(sessionId: string): Promise<{
+    audit: FinalAudit;
+    all_decisions: any[];
+    leverages: any[];
+  }> {
+    const response = await fetch(`${API_BASE}/game/${sessionId}/audit`);
+
+    if (!response.ok) {
+      throw new Error('获取审计报告失败');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * 删除游戏会话
+   */
+  async deleteGame(sessionId: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/game/${sessionId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      throw new Error('删除游戏失败');
+    }
   },
 };

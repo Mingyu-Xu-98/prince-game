@@ -4,3 +4,5 @@ export { ChatPanel } from './ChatPanel';
 export { EventModal } from './EventModal';
 export { GameBoard } from './GameBoard';
 export { SetupScreen } from './SetupScreen';
+export { ChapterSelect } from './ChapterSelect';
+export { FinalAuditPanel } from './FinalAuditPanel';

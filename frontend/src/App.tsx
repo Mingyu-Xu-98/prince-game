@@ -1,22 +1,24 @@
 import { useGameState } from './hooks/useGameState';
-import { SetupScreen, GameBoard } from './components';
+import { SetupScreen, GameBoard, ChapterSelect, FinalAuditPanel } from './components';
 
 function App() {
   const {
     sessionId,
     gameState,
+    currentChapter,
     dialogueHistory,
-    currentEvent,
+    availableChapters,
     isLoading,
     error,
-    lastTurnResult,
+    intro,
+    finalAudit,
     apiKey,
     setApiKey,
     model,
     setModel,
     startNewGame,
-    submitTurn,
-    handleEventChoice,
+    startChapter,
+    submitDecision,
   } = useGameState();
 
   // 如果没有开始游戏，显示设置界面
@@ -30,6 +32,16 @@ function App() {
         onStartGame={startNewGame}
         isLoading={isLoading}
         error={error}
+      />
+    );
+  }
+
+  // 如果有最终审计结果，显示通关界面
+  if (finalAudit) {
+    return (
+      <FinalAuditPanel
+        audit={finalAudit}
+        onNewGame={startNewGame}
       />
     );
   }
@@ -59,6 +71,17 @@ function App() {
           }}>
             👑 君主论
           </h1>
+          {currentChapter && (
+            <span style={{
+              color: '#888',
+              fontSize: '14px',
+              padding: '4px 12px',
+              backgroundColor: '#1a1a2e',
+              borderRadius: '4px',
+            }}>
+              📜 {currentChapter.chapter_name} - 回合 {currentChapter.current_turn}/{currentChapter.max_turns}
+            </span>
+          )}
           <span style={{
             color: '#555',
             fontSize: '12px',
@@ -96,16 +119,25 @@ function App() {
         </div>
       </header>
 
-      {/* 游戏主面板 */}
-      <GameBoard
-        gameState={gameState}
-        dialogueHistory={dialogueHistory}
-        lastTurnResult={lastTurnResult}
-        currentEvent={currentEvent}
-        isLoading={isLoading}
-        onSubmitTurn={submitTurn}
-        onEventChoice={handleEventChoice}
-      />
+      {/* 如果没有当前关卡，显示关卡选择或介绍 */}
+      {!currentChapter ? (
+        <ChapterSelect
+          intro={intro}
+          chapters={availableChapters}
+          gameState={gameState}
+          onSelectChapter={startChapter}
+          isLoading={isLoading}
+        />
+      ) : (
+        /* 游戏主面板 */
+        <GameBoard
+          gameState={gameState}
+          currentChapter={currentChapter}
+          dialogueHistory={dialogueHistory}
+          isLoading={isLoading}
+          onSubmitDecision={submitDecision}
+        />
+      )}
     </div>
   );
 }
