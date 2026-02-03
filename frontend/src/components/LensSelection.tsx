@@ -8,9 +8,10 @@ interface LensSelectionProps {
   lensChoices: Record<string, ObservationLensChoice>;
   onSelect: (lens: string) => void;
   isLoading: boolean;
+  onBack?: () => void;
 }
 
-export function LensSelection({ lensChoices, onSelect, isLoading }: LensSelectionProps) {
+export function LensSelection({ lensChoices, onSelect, isLoading, onBack }: LensSelectionProps) {
   // 透镜的神秘名称和意象，不透露具体效果
   const lensDisplay: Record<string, { icon: string; name: string; motto: string }> = {
     suspicion: {
@@ -44,6 +45,42 @@ export function LensSelection({ lensChoices, onSelect, isLoading }: LensSelectio
         <div className="decoration-circle c2" />
         <div className="decoration-circle c3" />
       </div>
+
+      {/* 返回按钮 */}
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="back-button"
+          style={{
+            position: 'absolute',
+            top: '20px',
+            left: '20px',
+            padding: '10px 16px',
+            backgroundColor: theme.bg.card,
+            border: `1px solid ${theme.border.medium}`,
+            borderRadius: '8px',
+            color: theme.text.secondary,
+            fontSize: '14px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            zIndex: 100,
+            transition: 'all 0.2s',
+            boxShadow: theme.shadow.sm,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = theme.border.dark;
+            e.currentTarget.style.color = theme.text.primary;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = theme.border.medium;
+            e.currentTarget.style.color = theme.text.secondary;
+          }}
+        >
+          ← 返回
+        </button>
+      )}
 
       {/* 主内容 */}
       <div className="lens-content">

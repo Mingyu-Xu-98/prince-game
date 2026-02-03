@@ -199,6 +199,7 @@ function App() {
         lensChoices={lensChoices}
         onSelect={selectObservationLens}
         isLoading={isLoading}
+        onBack={exitToSetup}
       />
     );
   }
