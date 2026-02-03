@@ -1,7 +1,11 @@
 // 游戏状态管理 Hook - 支持关卡系统和新裁决系统
 
 import { useState, useCallback, useEffect } from 'react';
-import type { GameState, ChapterScene, DecisionResult, DialogueEntry, ChapterInfo, FinalAudit, ObservationLensChoice, JudgmentMetadata, DecreeConsequence, PendingConsequence } from '../types/game';
+import type {
+  GameState, ChapterScene, DecisionResult, DialogueEntry, ChapterInfo, FinalAudit,
+  ObservationLensChoice, JudgmentMetadata, DecreeConsequence, PendingConsequence,
+  CausalState, ShadowSeed, TriggeredEcho
+} from '../types/game';
 import { gameApi } from '../api/gameApi';
 
 // 游戏阶段
@@ -37,6 +41,11 @@ interface UseGameStateReturn {
   // 累积的未处理影响
   pendingConsequences: PendingConsequence[];
 
+  // 因果系统状态
+  causalState: CausalState;
+  activeShadows: ShadowSeed[];  // 当前关卡激活的伏笔
+  recentEchoes: TriggeredEcho[];  // 最近触发的回响
+
   // 状态更新器
   setGameState: (state: GameState) => void;
 
@@ -66,6 +75,14 @@ const STORAGE_KEYS = {
   PENDING_CONSEQUENCES: 'game_pending_consequences',
   INTRO: 'game_intro',
   MOUNTAIN_VIEW: 'game_mountain_view',
+  CAUSAL_STATE: 'game_causal_state',
+};
+
+// 默认因果状态
+const DEFAULT_CAUSAL_STATE: CausalState = {
+  shadow_seeds: [],
+  immediate_flags: [],
+  triggered_echoes: [],
 };
 
 // 从 localStorage 安全获取 JSON 数据
@@ -109,6 +126,11 @@ export function useGameState(): UseGameStateReturn {
 
   // 累积的未处理影响 - 从 localStorage 恢复
   const [pendingConsequences, setPendingConsequences] = useState<PendingConsequence[]>(() => getStoredJson(STORAGE_KEYS.PENDING_CONSEQUENCES, []));
+
+  // 因果系统状态 - 从 localStorage 恢复
+  const [causalState, setCausalState] = useState<CausalState>(() => getStoredJson(STORAGE_KEYS.CAUSAL_STATE, DEFAULT_CAUSAL_STATE));
+  const [activeShadows, setActiveShadows] = useState<ShadowSeed[]>([]);
+  const [recentEchoes, setRecentEchoes] = useState<TriggeredEcho[]>([]);
 
   // UI 状态
   const [isLoading, setIsLoading] = useState(false);
@@ -163,6 +185,11 @@ export function useGameState(): UseGameStateReturn {
     localStorage.setItem(STORAGE_KEYS.PENDING_CONSEQUENCES, JSON.stringify(pendingConsequences));
   }, [pendingConsequences]);
 
+  // 保存因果状态到 localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CAUSAL_STATE, JSON.stringify(causalState));
+  }, [causalState]);
+
   useEffect(() => {
     if (intro) {
       localStorage.setItem(STORAGE_KEYS.INTRO, intro);
@@ -174,6 +201,97 @@ export function useGameState(): UseGameStateReturn {
       localStorage.setItem(STORAGE_KEYS.MOUNTAIN_VIEW, mountainView);
     }
   }, [mountainView]);
+
+  // ============ 因果系统辅助函数 ============
+
+  // 检查种子是否应该在当前关卡触发
+  const checkSeedTrigger = useCallback((seed: ShadowSeed, chapterId: string, totalTurn: number): boolean => {
+    if (seed.is_triggered) return false;
+
+    // 检查具体关卡触发
+    if (seed.trigger_chapter && seed.trigger_chapter === chapterId) {
+      return true;
+    }
+
+    // 检查延迟回合触发
+    if (seed.trigger_delay !== undefined) {
+      const turnsSincePlanted = totalTurn - seed.origin_turn;
+      if (turnsSincePlanted >= seed.trigger_delay) {
+        return true;
+      }
+    }
+
+    // 检查条件触发 (需要配合游戏状态)
+    // 这里可以扩展更多条件，如 LOW_LOVE, WAR 等
+    if (seed.trigger_condition) {
+      // 条件触发逻辑可以在后端实现，这里留作扩展
+    }
+
+    return false;
+  }, []);
+
+  // 在关卡开始时检查并激活伏笔
+  const activateShadowsForChapter = useCallback((chapterId: string, totalTurn: number) => {
+    const triggeredSeeds: ShadowSeed[] = [];
+
+    causalState.shadow_seeds.forEach(seed => {
+      if (checkSeedTrigger(seed, chapterId, totalTurn)) {
+        triggeredSeeds.push(seed);
+      }
+    });
+
+    setActiveShadows(triggeredSeeds);
+    return triggeredSeeds;
+  }, [causalState.shadow_seeds, checkSeedTrigger]);
+
+  // 注意：以下因果系统辅助函数在后端返回数据时通过 processCausalUpdate 间接使用
+  // 如果将来需要前端手动管理种子，可以在这里添加相关函数
+
+  // 处理决策后的因果更新
+  const processCausalUpdate = useCallback((result: DecisionResult) => {
+    if (!result.causal_update) return;
+
+    const { add_seeds, remove_seed_ids, add_flags, remove_flag_ids } = result.causal_update;
+
+    setCausalState(prev => {
+      let newSeeds = [...prev.shadow_seeds];
+      let newFlags = [...prev.immediate_flags];
+
+      // 移除种子 (被化解的)
+      if (remove_seed_ids && remove_seed_ids.length > 0) {
+        newSeeds = newSeeds.filter(s => !remove_seed_ids.includes(s.id));
+        console.log('🌱 [因果系统] 移除种子:', remove_seed_ids);
+      }
+
+      // 添加新种子
+      if (add_seeds && add_seeds.length > 0) {
+        newSeeds = [...newSeeds, ...add_seeds];
+        console.log('🌱 [因果系统] 添加种子:', add_seeds);
+      }
+
+      // 移除标记
+      if (remove_flag_ids && remove_flag_ids.length > 0) {
+        newFlags = newFlags.filter(f => !remove_flag_ids.includes(f.id));
+      }
+
+      // 添加标记
+      if (add_flags && add_flags.length > 0) {
+        newFlags = [...newFlags, ...add_flags];
+      }
+
+      return {
+        ...prev,
+        shadow_seeds: newSeeds,
+        immediate_flags: newFlags,
+      };
+    });
+
+    // 处理触发的回响
+    if (result.triggered_echoes && result.triggered_echoes.length > 0) {
+      setRecentEchoes(result.triggered_echoes);
+      console.log('⚡ [因果系统] 触发回响:', result.triggered_echoes);
+    }
+  }, []);
 
   // 保存配置到 localStorage
   const handleSetApiKey = useCallback((key: string) => {
@@ -201,6 +319,9 @@ export function useGameState(): UseGameStateReturn {
       localStorage.removeItem(key);
     });
     setPendingConsequences([]);
+    setCausalState(DEFAULT_CAUSAL_STATE);
+    setActiveShadows([]);
+    setRecentEchoes([]);
 
     try {
       const response = await gameApi.newGame(apiKey, model || undefined, false);
@@ -282,13 +403,29 @@ export function useGameState(): UseGameStateReturn {
       setGameState(response.state);
       setGamePhase('playing');
 
+      // 检查并激活当前关卡的伏笔
+      const totalTurn = response.state?.total_turn || 0;
+      const triggeredSeeds = activateShadowsForChapter(chapterId, totalTurn);
+      setRecentEchoes([]); // 清空之前的回响
+
+      // 构建开场叙事
+      let openingContent = `📜 【${response.chapter.name}】开始\n\n${response.chapter.opening_narration || response.chapter.scene_snapshot}`;
+
+      // 如果有激活的伏笔，添加因果回响提示
+      if (triggeredSeeds.length > 0) {
+        openingContent += `\n\n⚡ 【命运的回响】\n过去的决策正在显现其后果...`;
+        triggeredSeeds.forEach(seed => {
+          openingContent += `\n• ${seed.player_visible_hint || seed.description}`;
+        });
+      }
+
       // 添加开场叙事到对话历史
       setDialogueHistory(prev => [
         ...prev,
         {
           turn: 0,
           speaker: 'system',
-          content: `📜 【${response.chapter.name}】开始\n\n${response.chapter.opening_narration || response.chapter.scene_snapshot}`
+          content: openingContent
         }
       ]);
 
@@ -367,12 +504,64 @@ export function useGameState(): UseGameStateReturn {
         setLastJudgment(result.judgment_metadata);
       }
 
+      // 处理因果系统更新
+      processCausalUpdate(result);
+
       // 因果回响触发（重要事件，仍需显示）
       if (result.echo_triggered) {
         newEntries.push({
           turn: result.turn,
           speaker: 'system',
           content: `⚡ 命运的回响触动了你过去的抉择...`
+        });
+      }
+
+      // 显示新触发的回响
+      if (result.triggered_echoes && result.triggered_echoes.length > 0) {
+        result.triggered_echoes.forEach(echo => {
+          newEntries.push({
+            turn: result.turn,
+            speaker: 'system',
+            content: `⚡ 【因果回响】\n${echo.echo_narrative}\n\n📜 这是你在第 ${echo.trigger_chapter} 关做出「${echo.seed_description}」决策的后果...`
+          });
+
+          // 添加顾问对回响的反应
+          if (echo.advisor_reactions) {
+            if (echo.advisor_reactions.balance) {
+              newEntries.push({
+                turn: result.turn,
+                speaker: 'balance',
+                content: echo.advisor_reactions.balance
+              });
+            }
+            if (echo.advisor_reactions.lion) {
+              newEntries.push({
+                turn: result.turn,
+                speaker: 'lion',
+                content: echo.advisor_reactions.lion
+              });
+            }
+            if (echo.advisor_reactions.fox) {
+              newEntries.push({
+                turn: result.turn,
+                speaker: 'fox',
+                content: echo.advisor_reactions.fox
+              });
+            }
+          }
+        });
+      }
+
+      // 显示新埋下的伏笔提示（隐晦的）
+      if (result.causal_update?.add_seeds && result.causal_update.add_seeds.length > 0) {
+        result.causal_update.add_seeds.forEach(seed => {
+          if (seed.player_visible_hint) {
+            newEntries.push({
+              turn: result.turn,
+              speaker: 'system',
+              content: `🌱 ${seed.player_visible_hint}`
+            });
+          }
         });
       }
 
@@ -527,6 +716,9 @@ export function useGameState(): UseGameStateReturn {
     setLastDecisionResult(null);
     setSelectedLens(null);
     setPendingConsequences([]);
+    setCausalState(DEFAULT_CAUSAL_STATE);
+    setActiveShadows([]);
+    setRecentEchoes([]);
     setIntro('');
     setMountainView('');
 
@@ -723,6 +915,10 @@ export function useGameState(): UseGameStateReturn {
     setModel: handleSetModel,
     // 累积的未处理影响
     pendingConsequences,
+    // 因果系统状态
+    causalState,
+    activeShadows,
+    recentEchoes,
 
     // 状态更新器
     setGameState,

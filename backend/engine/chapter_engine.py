@@ -8,7 +8,7 @@ import re
 from openai import AsyncOpenAI
 from config import settings
 from models import GameState, ChapterLibrary, ChapterID, Chapter
-from models.game_state import DecisionRecord
+from models.game_state import DecisionRecord, ShadowSeed, ShadowSeedTag, ShadowSeedSeverity, TriggeredEcho
 
 
 class ChapterEngine:
@@ -48,8 +48,23 @@ class ChapterEngine:
         # 设置黑箱模式
         game_state.hide_values = chapter.hide_values
 
+        # [因果系统] 检查并触发本关卡的伏笔
+        triggered_echoes = await self.check_and_trigger_echoes(game_state, chapter)
+
+        # 获取场景描述（可能被因果回响修改）
+        scene_snapshot = chapter.scene_snapshot
+        if triggered_echoes:
+            scene_snapshot = await self.get_scene_with_echoes(game_state, chapter, triggered_echoes)
+
         # 生成开场
         opening = await self.generate_chapter_opening(chapter, game_state)
+
+        # 如果有触发的回响，添加到开场白中
+        if triggered_echoes:
+            echo_intro = "\n\n⚡ 【命运的回响】\n过去的决策正在显现其后果..."
+            for echo in triggered_echoes:
+                echo_intro += f"\n• {echo.get('echo_narrative', '')}"
+            opening += echo_intro
 
         return {
             "chapter": {
@@ -60,11 +75,12 @@ class ChapterEngine:
                 "max_turns": chapter.max_turns,
             },
             "background": chapter.background,
-            "scene_snapshot": chapter.scene_snapshot,
+            "scene_snapshot": scene_snapshot,
             "dilemma": chapter.dilemma,
             "opening_narration": opening,
             "council_debate": await self.generate_council_debate(chapter, game_state),
             "state": game_state.to_summary(include_hidden=not chapter.hide_values),
+            "triggered_echoes": triggered_echoes,  # 返回触发的回响供前端展示
         }
 
     async def generate_chapter_opening(self, chapter: Chapter, game_state: GameState) -> str:
@@ -301,6 +317,17 @@ class ChapterEngine:
             chapter=chapter,
         )
 
+        # [因果系统] 分析决策并生成伏笔种子
+        causal_seeds = await self.analyze_decision_for_seeds(
+            game_state=game_state,
+            player_decision=player_input,
+            decision_analysis=analysis,
+            chapter=chapter,
+        )
+
+        # 处理即时标记的回合计时
+        game_state.tick_immediate_flags()
+
         return {
             "decision_analysis": analysis,
             "impact": impact,
@@ -309,6 +336,9 @@ class ChapterEngine:
             "chapter_result": chapter_result,
             "state": game_state.to_summary(include_hidden=not chapter.hide_values),
             "decree_consequences": decree_consequences,  # 添加政令后续影响
+            "causal_update": {
+                "add_seeds": causal_seeds,  # 新创建的伏笔种子
+            } if causal_seeds else None,
         }
 
     async def _analyze_decision(self, player_input: str, chapter: Chapter) -> dict:
@@ -1109,3 +1139,319 @@ class ChapterEngine:
             "trust_changes": {"lion": 0, "fox": 0, "balance": 0},
             "atmosphere": "neutral"
         }
+
+    # ==================== 因果系统 (Causal System) ====================
+
+    async def analyze_decision_for_seeds(
+        self,
+        game_state: GameState,
+        player_decision: str,
+        decision_analysis: dict,
+        chapter: Chapter,
+    ) -> List[Dict[str, Any]]:
+        """
+        [因果记录协议] 分析决策并生成伏笔种子
+        在发布政令后的结算阶段，分析玩家决策的长远副作用
+        """
+        # 获取当前因果上下文
+        causal_context = game_state.get_causal_context_for_ai()
+
+        prompt = f"""## [因果记录协议] (Causal Logging Protocol)
+
+你是《君主论》博弈游戏的因果分析师。在【发布政令】后的结算阶段，你必须分析玩家决策的长远副作用。
+
+【当前关卡】
+关卡：{chapter.name} - {chapter.subtitle}
+困境：{chapter.dilemma}
+当前回合：{game_state.chapter_turn}
+
+【玩家决策】
+政令内容："{player_decision}"
+
+【决策特征】
+- 是否涉及暴力：{"是" if decision_analysis.get("was_violent") else "否"}
+- 是否涉及欺骗：{"是" if decision_analysis.get("was_deceptive") else "否"}
+- 是否公平公正：{"是" if decision_analysis.get("was_fair") else "否"}
+- 是否包含承诺：{"是" if decision_analysis.get("contains_promise") else "否"}
+- 是否秘密行动：{"是" if decision_analysis.get("is_secret_action") else "否"}
+
+【当前权力状态】
+- 掌控力: {game_state.power.authority:.0f}%
+- 畏惧值: {game_state.power.fear:.0f}%
+- 爱戴值: {game_state.power.love:.0f}%
+- 信用分: {game_state.credit_score:.0f}
+
+【已有的伏笔种子】
+{json.dumps(causal_context.get("pending_seeds", []), ensure_ascii=False, indent=2)}
+
+【《君主论》因果教诲】
+1. "欺骗"行为 → 2关卡后可能被揭穿，引发信任危机
+2. "借贷/许诺"行为 → 到期时必须偿还，否则信誉崩溃
+3. "残酷镇压"行为 → 短期有效，长期积累民怨
+4. "过度仁慈"行为 → 可能被视为软弱，引发野心家觊觎
+5. "背叛盟友"行为 → 未来可能遭到报复或孤立
+
+【生成规则】
+1. **分析副作用**：如果玩家使用了"欺骗"、"借贷"、"残酷镇压"、"过度仁慈"或"背叛"，必须生成【因果种子】
+2. **定义触发期**：
+   - 通常在 2-3 个关卡后爆发
+   - 或者标记为条件触发 (如 "LOW_LOVE", "ANY_RIOT", "BETRAYAL_RISK")
+3. **如果决策相对中庸或没有明显副作用，可以不生成种子**
+
+返回JSON格式：
+{{
+  "should_plant_seed": true/false,
+  "seeds": [
+    {{
+      "tag": "DECEPTION/VIOLENCE/BROKEN_PROMISE/MERCY/DEBT/CORRUPTION/BETRAYAL/OTHER",
+      "description": "简短描述这个决策造成的隐患（例如：士兵手里拿着大量假币）",
+      "player_visible_hint": "给玩家的隐晦暗示（例如：有些事情不会被遗忘...）",
+      "severity": "LOW/MEDIUM/HIGH/CRITICAL",
+      "trigger_delay": 2-4,
+      "trigger_condition": "可选：LOW_LOVE/LOW_FEAR/ANY_RIOT/BETRAYAL_RISK/null"
+    }}
+  ],
+  "analysis": "为什么这个决策会埋下隐患的简短分析"
+}}
+
+如果不需要生成种子，返回：
+{{
+  "should_plant_seed": false,
+  "seeds": [],
+  "analysis": "为什么这个决策相对安全"
+}}"""
+
+        try:
+            print(f"[ChapterEngine][因果系统] 分析决策种子...")
+            print(f"[ChapterEngine][因果系统] 政令: {player_decision[:50]}...")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=800,
+            )
+            content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine][因果系统] 种子分析响应: {content[:100]}...")
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine][因果系统] 是否需要种子: {result.get('should_plant_seed')}")
+
+                if result.get("should_plant_seed") and result.get("seeds"):
+                    # 创建实际的种子对象
+                    created_seeds = []
+                    for seed_data in result["seeds"]:
+                        seed = game_state.add_shadow_seed(
+                            description=seed_data.get("description", "未知隐患"),
+                            tag=ShadowSeedTag(seed_data.get("tag", "OTHER")),
+                            severity=ShadowSeedSeverity(seed_data.get("severity", "MEDIUM")),
+                            trigger_delay=seed_data.get("trigger_delay"),
+                            trigger_condition=seed_data.get("trigger_condition"),
+                            player_visible_hint=seed_data.get("player_visible_hint"),
+                        )
+                        created_seeds.append({
+                            "id": seed.id,
+                            "description": seed.description,
+                            "tag": seed.tag.value,
+                            "severity": seed.severity.value,
+                            "trigger_delay": seed.trigger_delay,
+                            "player_visible_hint": seed.player_visible_hint,
+                        })
+                        print(f"[ChapterEngine][因果系统] 创建种子: {seed.description[:30]}...")
+
+                    return created_seeds
+
+                return []
+
+        except Exception as e:
+            print(f"[ChapterEngine][因果系统] 分析种子失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return []
+
+    async def check_and_trigger_echoes(
+        self,
+        game_state: GameState,
+        chapter: Chapter,
+    ) -> List[Dict[str, Any]]:
+        """
+        [因果回响读取] 在关卡开始时检查并触发伏笔
+        将需要触发的种子转化为场景叙事
+        """
+        # 检查当前关卡应该触发的种子
+        seeds_to_trigger = game_state.check_seeds_for_chapter(chapter.id.value)
+
+        if not seeds_to_trigger:
+            print(f"[ChapterEngine][因果系统] 本关卡无需触发的种子")
+            return []
+
+        print(f"[ChapterEngine][因果系统] 发现 {len(seeds_to_trigger)} 个需要触发的种子")
+
+        triggered_echoes = []
+
+        for seed in seeds_to_trigger:
+            echo = await self._generate_echo_for_seed(game_state, seed, chapter)
+            if echo:
+                triggered_echoes.append(echo)
+
+        return triggered_echoes
+
+    async def _generate_echo_for_seed(
+        self,
+        game_state: GameState,
+        seed: ShadowSeed,
+        chapter: Chapter,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        为单个种子生成因果回响
+        """
+        prompt = f"""## [因果回响生成] (Causal Echo Retrieval)
+
+你是《君主论》博弈游戏的叙事者。一个过去的决策正在显现其后果。
+
+【原始决策（种子）】
+- 来源关卡: {seed.origin_chapter}
+- 来源回合: {seed.origin_turn}
+- 类型标签: {seed.tag.value}
+- 描述: {seed.description}
+- 严重程度: {seed.severity.value}
+
+【当前关卡】
+关卡: {chapter.name}
+困境: {chapter.dilemma}
+场景: {chapter.scene_snapshot}
+
+【当前权力状态】
+- 掌控力: {game_state.power.authority:.0f}%
+- 畏惧值: {game_state.power.fear:.0f}%
+- 爱戴值: {game_state.power.love:.0f}%
+
+【生成要求】
+1. **强制整合**：你必须将这个种子的后果，编织进当前关卡的【危机场景描述】中
+2. **叠加难度**：这个旧债必须让当前的危机变得更难处理
+3. **NPC 记忆**：
+   - 天平必须明确指出这是过去决定的利息
+   - 狮子/狐狸根据性格对旧账进行嘲讽或推卸责任
+
+返回JSON格式：
+{{
+  "echo_narrative": "一段描述旧决策后果如何在当前爆发的叙事文本（50-100字）",
+  "crisis_modifier": "这个回响如何让当前危机变得更复杂（30-50字）",
+  "advisor_reactions": {{
+    "lion": "狮子的反应（1-2句）",
+    "fox": "狐狸的反应（1-2句）",
+    "balance": "天平的反应（必须提到这是过去决策的后果）（1-2句）"
+  }},
+  "additional_impact": {{
+    "authority": -10到10,
+    "fear": -10到10,
+    "love": -10到10
+  }}
+}}"""
+
+        try:
+            print(f"[ChapterEngine][因果系统] 生成回响: {seed.description[:30]}...")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=600,
+            )
+            content = response.choices[0].message.content.strip()
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+
+                # 在游戏状态中记录触发
+                echo = game_state.trigger_seed(
+                    seed_id=seed.id,
+                    echo_narrative=result.get("echo_narrative", "过去的决策显现了后果..."),
+                    crisis_modifier=result.get("crisis_modifier", "局势变得更加复杂"),
+                    advisor_reactions=result.get("advisor_reactions", {}),
+                )
+
+                # 应用额外影响
+                impact = result.get("additional_impact", {})
+                if impact:
+                    game_state.power = game_state.power.apply_delta(
+                        delta_a=impact.get("authority", 0),
+                        delta_f=impact.get("fear", 0),
+                        delta_l=impact.get("love", 0),
+                    )
+
+                print(f"[ChapterEngine][因果系统] 回响生成成功")
+
+                return {
+                    "seed_id": seed.id,
+                    "seed_description": seed.description,
+                    "origin_chapter": seed.origin_chapter,
+                    "echo_narrative": result.get("echo_narrative"),
+                    "crisis_modifier": result.get("crisis_modifier"),
+                    "advisor_reactions": result.get("advisor_reactions", {}),
+                    "trigger_chapter": chapter.id.value,
+                    "trigger_turn": game_state.total_turn,
+                }
+
+        except Exception as e:
+            print(f"[ChapterEngine][因果系统] 生成回响失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return None
+
+    async def get_scene_with_echoes(
+        self,
+        game_state: GameState,
+        chapter: Chapter,
+        triggered_echoes: List[Dict[str, Any]],
+    ) -> str:
+        """
+        生成包含因果回响的关卡场景描述
+        """
+        if not triggered_echoes:
+            return chapter.scene_snapshot
+
+        echoes_desc = "\n".join([
+            f"- {echo.get('echo_narrative', '')}"
+            for echo in triggered_echoes
+        ])
+
+        prompt = f"""你是《君主论》博弈游戏的叙事者。
+需要将过去决策的后果整合到当前关卡场景中。
+
+【原始场景】
+{chapter.scene_snapshot}
+
+【当前困境】
+{chapter.dilemma}
+
+【需要整合的因果回响】
+{echoes_desc}
+
+请重新撰写场景描述，将因果回响自然地融入其中，使其成为当前困境的一部分。
+要求：
+1. 保持原场景的核心内容
+2. 将回响作为额外的复杂因素加入
+3. 语言风格保持古典文言白话混合
+4. 总长度100-150字
+
+直接返回新的场景描述，不要其他解释。"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300,
+            )
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            print(f"[ChapterEngine][因果系统] 整合场景失败: {e}")
+            # 返回原场景加上回响提示
+            return f"{chapter.scene_snapshot}\n\n【命运的回响】\n{echoes_desc}"

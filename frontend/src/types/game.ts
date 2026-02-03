@@ -43,7 +43,87 @@ export interface JudgmentMetadata {
   consequence: string;
 }
 
-// 因果种子
+// ============ 因果系统 (Causal System) ============
+
+// 伏笔种子 (Shadow Seed) - 埋下的雷，将在未来触发
+export interface ShadowSeed {
+  id: string;                          // 唯一标识
+  origin_chapter: string;              // 来源关卡 ID
+  origin_turn: number;                 // 来源回合
+  trigger_chapter?: string;            // 触发关卡 (具体关卡ID)
+  trigger_delay?: number;              // 延迟触发回合数
+  trigger_condition?: string;          // 条件触发 (如 "ANY_RIOT", "LOW_LOVE", "WAR")
+  tag: 'DECEPTION' | 'VIOLENCE' | 'BROKEN_PROMISE' | 'MERCY' | 'DEBT' | 'CORRUPTION' | 'BETRAYAL' | 'OTHER';
+  description: string;                 // 语义描述 (给 AI 看)
+  player_visible_hint?: string;        // 给玩家的隐晦提示
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  created_at: number;                  // 创建时间戳
+  is_triggered: boolean;               // 是否已触发
+  triggered_at?: number;               // 触发时间戳
+}
+
+// 即时状态标记 (Immediate Flag) - 当前回合生效的 Buff/Debuff
+export interface ImmediateFlag {
+  id: string;
+  type: 'BUFF' | 'DEBUFF' | 'MODIFIER';
+  name: string;
+  description: string;
+  effect_on_scene: string;             // 对场景的影响描述
+  duration_turns?: number;             // 持续回合数 (undefined = 永久)
+  source_seed_id?: string;             // 来源种子ID (如果是种子触发的)
+  modifiers?: {                        // 数值修正
+    authority?: number;
+    fear?: number;
+    love?: number;
+    trust_lion?: number;
+    trust_fox?: number;
+    trust_balance?: number;
+  };
+}
+
+// 因果状态 (Causal State) - 完整的因果池
+export interface CausalState {
+  shadow_seeds: ShadowSeed[];          // 伏笔种子库
+  immediate_flags: ImmediateFlag[];    // 即时状态列表
+  triggered_echoes: TriggeredEcho[];   // 已触发的回响记录
+}
+
+// 触发的回响 (用于记录和展示)
+export interface TriggeredEcho {
+  seed_id: string;
+  seed_description: string;
+  trigger_chapter: string;
+  trigger_turn: number;
+  echo_narrative: string;              // AI 生成的叙事文本
+  crisis_modifier: string;             // 对当前危机的影响
+  advisor_reactions: {                 // 顾问的反应
+    lion?: string;
+    fox?: string;
+    balance?: string;
+  };
+}
+
+// API 返回的新种子 (政令结算时)
+export interface NewSeedFromDecision {
+  add_seeds?: ShadowSeed[];            // 新增的种子
+  remove_seed_ids?: string[];          // 移除的种子 (被化解)
+  add_flags?: ImmediateFlag[];         // 新增的即时状态
+  remove_flag_ids?: string[];          // 移除的即时状态
+}
+
+// 关卡初始化时的因果检查结果
+export interface CausalCheckResult {
+  active_shadows: ShadowSeed[];        // 本关卡需要触发的种子
+  echoes_to_inject: TriggeredEcho[];   // 需要注入场景的回响
+  modified_scene?: string;             // 被因果修改后的场景描述
+  advisor_warnings?: {                 // 顾问的警告
+    lion?: string;
+    fox?: string;
+    balance?: string;
+  };
+}
+
+// 旧的类型保持兼容
 export interface CausalSeedInfo {
   action_type: string;
   description: string;
@@ -51,7 +131,7 @@ export interface CausalSeedInfo {
   warning: string;
 }
 
-// 因果回响
+// 因果回响 (旧版兼容)
 export interface EchoTriggered {
   source_chapter: number;
   source_turn: number;
@@ -85,6 +165,9 @@ export interface GameState {
   game_over: boolean;
   game_over_reason: string | null;
   observation_lens?: string;  // 观测透镜
+
+  // 因果系统
+  causal_state?: CausalState;
 }
 
 // 关卡相关
@@ -206,6 +289,10 @@ export interface DecisionResult {
   // 政令后续影响
   decree_consequences?: DecreeConsequence[];
   pending_consequences?: PendingConsequence[];
+
+  // 因果系统更新
+  causal_update?: NewSeedFromDecision;
+  triggered_echoes?: TriggeredEcho[];
 }
 
 export interface FinalAudit {

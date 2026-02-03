@@ -101,6 +101,84 @@ class Secret(BaseModel):
     consequences_if_leaked: dict = Field(default_factory=dict)
 
 
+# ============ 因果系统 (Causal System) ============
+
+class ShadowSeedTag(str, Enum):
+    """伏笔种子标签"""
+    DECEPTION = "DECEPTION"  # 欺骗
+    VIOLENCE = "VIOLENCE"  # 暴力
+    BROKEN_PROMISE = "BROKEN_PROMISE"  # 违背承诺
+    MERCY = "MERCY"  # 仁慈/软弱
+    DEBT = "DEBT"  # 债务
+    CORRUPTION = "CORRUPTION"  # 腐败
+    BETRAYAL = "BETRAYAL"  # 背叛
+    OTHER = "OTHER"  # 其他
+
+
+class ShadowSeedSeverity(str, Enum):
+    """伏笔严重程度"""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class ShadowSeed(BaseModel):
+    """伏笔种子 - 埋下的雷，将在未来触发"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    origin_chapter: str  # 来源关卡 ID
+    origin_turn: int  # 来源回合
+    trigger_chapter: Optional[str] = None  # 触发关卡 (具体关卡ID)
+    trigger_delay: Optional[int] = None  # 延迟触发回合数
+    trigger_condition: Optional[str] = None  # 条件触发 (如 "ANY_RIOT", "LOW_LOVE", "WAR")
+    tag: ShadowSeedTag = ShadowSeedTag.OTHER
+    description: str  # 语义描述 (给 AI 看)
+    player_visible_hint: Optional[str] = None  # 给玩家的隐晦提示
+    severity: ShadowSeedSeverity = ShadowSeedSeverity.MEDIUM
+    created_at: datetime = Field(default_factory=datetime.now)
+    is_triggered: bool = False
+    triggered_at: Optional[datetime] = None
+
+
+class ImmediateFlagType(str, Enum):
+    """即时状态类型"""
+    BUFF = "BUFF"
+    DEBUFF = "DEBUFF"
+    MODIFIER = "MODIFIER"
+
+
+class ImmediateFlag(BaseModel):
+    """即时状态标记 - 当前回合生效的 Buff/Debuff"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: ImmediateFlagType = ImmediateFlagType.MODIFIER
+    name: str
+    description: str
+    effect_on_scene: str  # 对场景的影响描述
+    duration_turns: Optional[int] = None  # 持续回合数 (None = 永久)
+    source_seed_id: Optional[str] = None  # 来源种子ID
+    modifiers: dict = Field(default_factory=dict)  # 数值修正
+
+
+class TriggeredEcho(BaseModel):
+    """触发的回响记录"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    seed_id: str
+    seed_description: str
+    trigger_chapter: str
+    trigger_turn: int
+    echo_narrative: str  # AI 生成的叙事文本
+    crisis_modifier: str  # 对当前危机的影响
+    advisor_reactions: dict = Field(default_factory=dict)  # 顾问的反应
+    triggered_at: datetime = Field(default_factory=datetime.now)
+
+
+class CausalState(BaseModel):
+    """因果状态 - 完整的因果池"""
+    shadow_seeds: list[ShadowSeed] = Field(default_factory=list)
+    immediate_flags: list[ImmediateFlag] = Field(default_factory=list)
+    triggered_echoes: list[TriggeredEcho] = Field(default_factory=list)
+
+
 class DecisionRecord(BaseModel):
     """决策记录（用于最终审计）"""
     turn: int
@@ -189,6 +267,9 @@ class GameState(BaseModel):
 
     # 观测透镜（新裁决系统）
     observation_lens: Optional[str] = None  # suspicion / expansion / balance
+
+    # 因果系统
+    causal_state: CausalState = Field(default_factory=CausalState)
 
     # ==================== 承诺系统 ====================
 
@@ -418,6 +499,185 @@ class GameState(BaseModel):
             "reputation_score": round(reputation_score, 1),
             "reputation": reputation,
             "credit_score": round(self.credit_score, 1),
+        }
+
+    # ==================== 因果系统 ====================
+
+    def add_shadow_seed(
+        self,
+        description: str,
+        tag: ShadowSeedTag = ShadowSeedTag.OTHER,
+        severity: ShadowSeedSeverity = ShadowSeedSeverity.MEDIUM,
+        trigger_delay: int = None,
+        trigger_chapter: str = None,
+        trigger_condition: str = None,
+        player_visible_hint: str = None,
+    ) -> ShadowSeed:
+        """添加伏笔种子"""
+        seed = ShadowSeed(
+            origin_chapter=self.current_chapter,
+            origin_turn=self.total_turn,
+            trigger_delay=trigger_delay,
+            trigger_chapter=trigger_chapter,
+            trigger_condition=trigger_condition,
+            tag=tag,
+            description=description,
+            player_visible_hint=player_visible_hint,
+            severity=severity,
+        )
+        self.causal_state.shadow_seeds.append(seed)
+        return seed
+
+    def get_pending_seeds(self) -> list[ShadowSeed]:
+        """获取所有未触发的种子"""
+        return [s for s in self.causal_state.shadow_seeds if not s.is_triggered]
+
+    def check_seeds_for_chapter(self, chapter_id: str) -> list[ShadowSeed]:
+        """检查当前关卡应该触发的种子"""
+        triggered = []
+        for seed in self.causal_state.shadow_seeds:
+            if seed.is_triggered:
+                continue
+
+            # 检查具体关卡触发
+            if seed.trigger_chapter and seed.trigger_chapter == chapter_id:
+                triggered.append(seed)
+                continue
+
+            # 检查延迟回合触发
+            if seed.trigger_delay is not None:
+                turns_since = self.total_turn - seed.origin_turn
+                if turns_since >= seed.trigger_delay:
+                    triggered.append(seed)
+                    continue
+
+            # 检查条件触发
+            if seed.trigger_condition:
+                if self._check_condition(seed.trigger_condition):
+                    triggered.append(seed)
+
+        return triggered
+
+    def _check_condition(self, condition: str) -> bool:
+        """检查条件是否满足"""
+        if condition == "LOW_LOVE":
+            return self.power.love < 30
+        elif condition == "LOW_FEAR":
+            return self.power.fear < 30
+        elif condition == "LOW_AUTHORITY":
+            return self.power.authority < 30
+        elif condition == "HIGH_VIOLENCE":
+            return self.stats.get("violent_decisions", 0) > 3
+        elif condition == "BETRAYAL_RISK":
+            return any(r.will_betray() for r in self.relations.values())
+        # 可以添加更多条件
+        return False
+
+    def trigger_seed(
+        self,
+        seed_id: str,
+        echo_narrative: str,
+        crisis_modifier: str,
+        advisor_reactions: dict = None
+    ) -> TriggeredEcho:
+        """触发种子并创建回响"""
+        for seed in self.causal_state.shadow_seeds:
+            if seed.id == seed_id and not seed.is_triggered:
+                seed.is_triggered = True
+                seed.triggered_at = datetime.now()
+
+                echo = TriggeredEcho(
+                    seed_id=seed_id,
+                    seed_description=seed.description,
+                    trigger_chapter=self.current_chapter,
+                    trigger_turn=self.total_turn,
+                    echo_narrative=echo_narrative,
+                    crisis_modifier=crisis_modifier,
+                    advisor_reactions=advisor_reactions or {},
+                )
+                self.causal_state.triggered_echoes.append(echo)
+                return echo
+        return None
+
+    def add_immediate_flag(
+        self,
+        name: str,
+        description: str,
+        effect_on_scene: str,
+        flag_type: ImmediateFlagType = ImmediateFlagType.MODIFIER,
+        duration_turns: int = None,
+        modifiers: dict = None,
+        source_seed_id: str = None,
+    ) -> ImmediateFlag:
+        """添加即时状态标记"""
+        flag = ImmediateFlag(
+            type=flag_type,
+            name=name,
+            description=description,
+            effect_on_scene=effect_on_scene,
+            duration_turns=duration_turns,
+            modifiers=modifiers or {},
+            source_seed_id=source_seed_id,
+        )
+        self.causal_state.immediate_flags.append(flag)
+        return flag
+
+    def remove_immediate_flag(self, flag_id: str) -> bool:
+        """移除即时状态标记"""
+        for i, flag in enumerate(self.causal_state.immediate_flags):
+            if flag.id == flag_id:
+                self.causal_state.immediate_flags.pop(i)
+                return True
+        return False
+
+    def tick_immediate_flags(self):
+        """处理即时标记的回合计时"""
+        expired = []
+        for flag in self.causal_state.immediate_flags:
+            if flag.duration_turns is not None:
+                flag.duration_turns -= 1
+                if flag.duration_turns <= 0:
+                    expired.append(flag.id)
+
+        for flag_id in expired:
+            self.remove_immediate_flag(flag_id)
+
+    def get_active_flags(self) -> list[ImmediateFlag]:
+        """获取所有活动的即时标记"""
+        return self.causal_state.immediate_flags
+
+    def get_causal_context_for_ai(self) -> dict:
+        """获取因果上下文供 AI 使用"""
+        return {
+            "pending_seeds": [
+                {
+                    "id": s.id,
+                    "description": s.description,
+                    "tag": s.tag.value,
+                    "severity": s.severity.value,
+                    "origin_chapter": s.origin_chapter,
+                    "origin_turn": s.origin_turn,
+                }
+                for s in self.get_pending_seeds()
+            ],
+            "active_flags": [
+                {
+                    "id": f.id,
+                    "name": f.name,
+                    "description": f.description,
+                    "effect_on_scene": f.effect_on_scene,
+                    "type": f.type.value,
+                }
+                for f in self.get_active_flags()
+            ],
+            "recent_echoes": [
+                {
+                    "seed_description": e.seed_description,
+                    "echo_narrative": e.echo_narrative,
+                    "trigger_chapter": e.trigger_chapter,
+                }
+                for e in self.causal_state.triggered_echoes[-3:]  # 最近3个回响
+            ],
         }
 
     # ==================== 基础方法 ====================

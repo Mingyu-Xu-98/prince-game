@@ -1769,7 +1769,7 @@ export function GameBoard({
         </div>
 
         {/* 顾问关系 */}
-        <div style={{ padding: '16px', flex: 1 }}>
+        <div style={{ padding: '16px' }}>
           <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 12px 0' }}>👥 顾问关系</h4>
 
           {(['lion', 'fox', 'balance'] as const).map((advisor) => {
@@ -1822,6 +1822,98 @@ export function GameBoard({
             );
           })}
         </div>
+
+        {/* 因果伏笔 - 潜伏的危机 */}
+        {gameState.causal_state && gameState.causal_state.shadow_seeds &&
+         gameState.causal_state.shadow_seeds.filter(s => !s.is_triggered).length > 0 && (
+          <div style={{
+            padding: '12px 16px',
+            borderTop: `1px solid ${theme.border.light}`,
+            backgroundColor: '#FFF7ED',
+          }}>
+            <h4 style={{
+              color: '#C2410C',
+              fontSize: '11px',
+              margin: '0 0 8px 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              🌱 潜伏的伏笔
+              <span style={{
+                fontSize: '10px',
+                fontWeight: 'normal',
+                color: theme.text.muted,
+              }}>
+                （{gameState.causal_state.shadow_seeds.filter(s => !s.is_triggered).length}）
+              </span>
+            </h4>
+            <div style={{ fontSize: '11px', color: theme.text.secondary }}>
+              {gameState.causal_state.shadow_seeds
+                .filter(s => !s.is_triggered)
+                .slice(0, 3)
+                .map((seed, idx) => {
+                  const severityColors: Record<string, string> = {
+                    LOW: '#059669',
+                    MEDIUM: '#D97706',
+                    HIGH: '#EA580C',
+                    CRITICAL: '#DC2626',
+                  };
+                  const severityLabels: Record<string, string> = {
+                    LOW: '轻微',
+                    MEDIUM: '中等',
+                    HIGH: '严重',
+                    CRITICAL: '危急',
+                  };
+                  return (
+                    <div
+                      key={seed.id || idx}
+                      style={{
+                        padding: '6px 8px',
+                        marginBottom: '4px',
+                        backgroundColor: 'rgba(255,255,255,0.6)',
+                        borderRadius: '4px',
+                        borderLeft: `3px solid ${severityColors[seed.severity] || '#D97706'}`,
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        marginBottom: '2px',
+                      }}>
+                        <span style={{
+                          fontSize: '9px',
+                          padding: '1px 4px',
+                          backgroundColor: severityColors[seed.severity] || '#D97706',
+                          color: '#FFF',
+                          borderRadius: '2px',
+                        }}>
+                          {severityLabels[seed.severity] || '未知'}
+                        </span>
+                        <span style={{ fontSize: '10px', color: theme.text.muted }}>
+                          来自第 {seed.origin_chapter?.replace('chapter_', '')} 关
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: theme.text.secondary }}>
+                        {seed.player_visible_hint || '某些决策的后果尚未显现...'}
+                      </div>
+                    </div>
+                  );
+                })}
+              {gameState.causal_state.shadow_seeds.filter(s => !s.is_triggered).length > 3 && (
+                <div style={{
+                  fontSize: '10px',
+                  color: theme.text.muted,
+                  textAlign: 'center',
+                  marginTop: '4px',
+                }}>
+                  还有 {gameState.causal_state.shadow_seeds.filter(s => !s.is_triggered).length - 3} 个潜伏中...
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* 警告 */}
         {gameState.warnings && gameState.warnings.length > 0 && (
