@@ -149,6 +149,26 @@ export interface ChapterResult {
   chapter_summary?: string;
 }
 
+// 政令后续影响
+export interface DecreeConsequence {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  type: 'political' | 'economic' | 'military' | 'social' | 'diplomatic';
+  potential_outcomes: string[];
+  requires_action: boolean;
+  deadline_turns?: number;  // 如果不处理，几回合后会自动触发
+}
+
+// 累积的未处理影响（会影响后续关卡）
+export interface PendingConsequence {
+  source_chapter: string;
+  source_turn: number;
+  consequence: DecreeConsequence;
+  turns_remaining?: number;
+}
+
 export interface DecisionResult {
   turn: number;
   decision_analysis: DecisionAnalysis;
@@ -182,6 +202,10 @@ export interface DecisionResult {
   causal_seed?: CausalSeedInfo;
   echo_triggered?: EchoTriggered;
   advisor_changes?: Record<string, AdvisorChangeInfo>;
+
+  // 政令后续影响
+  decree_consequences?: DecreeConsequence[];
+  pending_consequences?: PendingConsequence[];
 }
 
 export interface FinalAudit {

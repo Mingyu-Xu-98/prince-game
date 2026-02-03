@@ -241,4 +241,80 @@ export const gameApi = {
       throw new Error('删除游戏失败');
     }
   },
+
+  /**
+   * 密谈 - 单独召见顾问
+   */
+  async privateAudience(
+    sessionId: string,
+    advisor: string,
+    message: string,
+    apiKey: string,
+    model?: string
+  ): Promise<{
+    advisor: string;
+    response: string;
+    trust_change: number;
+    new_trust: number;
+  }> {
+    const response = await fetch(`${API_BASE}/game/private-audience`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        advisor,
+        message,
+        api_key: apiKey,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '密谈失败');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * 处理政令后续影响 - 继续处理某个后果
+   */
+  async handleConsequence(
+    sessionId: string,
+    consequenceId: string,
+    playerResponse: string,
+    apiKey: string,
+    model?: string
+  ): Promise<{
+    success: boolean;
+    scene_update: string;
+    advisor_comments: {
+      lion?: string;
+      fox?: string;
+      balance?: string;
+    };
+    consequence_resolved: boolean;
+    new_developments: string[];
+    state: GameState;
+  }> {
+    const response = await fetch(`${API_BASE}/game/consequence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        consequence_id: consequenceId,
+        player_response: playerResponse,
+        api_key: apiKey,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '处理政令后果失败');
+    }
+
+    return response.json();
+  },
 };

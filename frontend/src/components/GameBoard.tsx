@@ -1,10 +1,9 @@
-// 主游戏面板组件 - 支持关卡系统
+// 主游戏面板组件 - 浅色米色主题
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { PowerMeter } from './PowerMeter';
-import { RobotCard } from './RobotCard';
-import { ChatPanel } from './ChatPanel';
-import type { GameState, ChapterScene, DialogueEntry, DecisionResult } from '../types/game';
+import { theme, SPEAKER_CONFIG_LIGHT } from '../theme';
+import type { GameState, ChapterScene, DialogueEntry, DecisionResult, DecreeConsequence } from '../types/game';
 
 interface GameBoardProps {
   gameState: GameState;
@@ -12,7 +11,14 @@ interface GameBoardProps {
   dialogueHistory: DialogueEntry[];
   isLoading: boolean;
   onSubmitDecision: (input: string, followedAdvisor?: string) => Promise<DecisionResult | null>;
+  onPrivateAudience?: (advisor: string, message: string) => Promise<string | null>;
+  onNextChapter?: () => void;
+  onSkipConsequences?: (consequences: DecreeConsequence[]) => void;
+  onContinueWithConsequences?: (consequences: DecreeConsequence[]) => void;
 }
+
+// 游戏模式
+type GameMode = 'council' | 'private_audience' | 'decree_result';
 
 export function GameBoard({
   gameState,
@@ -20,129 +26,1318 @@ export function GameBoard({
   dialogueHistory,
   isLoading,
   onSubmitDecision,
+  onPrivateAudience,
+  onNextChapter,
+  onSkipConsequences,
+  onContinueWithConsequences,
 }: GameBoardProps) {
-  const [selectedAdvisor, setSelectedAdvisor] = useState<string | null>(null);
+  const [gameMode, setGameMode] = useState<GameMode>('council');
+  const [privateTarget, setPrivateTarget] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [decreeInput, setDecreeInput] = useState('');
+  const [showDecreeModal, setShowDecreeModal] = useState(false);
+  const [lastResult, setLastResult] = useState<DecisionResult | null>(null);
+  const [privateMessages, setPrivateMessages] = useState<DialogueEntry[]>([]);
+  const [privateLoading, setPrivateLoading] = useState(false);
 
-  const handleSubmit = async (input: string) => {
-    await onSubmitDecision(input, selectedAdvisor || undefined);
-    setSelectedAdvisor(null);
-  };
+  // 当前正在处理的后果
+  const [activeConsequences, setActiveConsequences] = useState<DecreeConsequence[]>([]);
+
+  const historyEndRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [dialogueHistory, privateMessages]);
 
   // 从 council_debate 获取顾问建议
-  const lionSuggestion = currentChapter.council_debate?.lion;
-  const foxSuggestion = currentChapter.council_debate?.fox;
-  const balanceSuggestion = currentChapter.council_debate?.balance;
+  const councilDebate = currentChapter.council_debate;
+
+  // 廷议中与顾问讨论
+  const [councilLoading, setCouncilLoading] = useState(false);
+  const [councilMessages, setCouncilMessages] = useState<DialogueEntry[]>([]);
+
+  const handleCouncilDiscuss = async () => {
+    if (!input.trim() || councilLoading) return;
+
+    const userMessage = input.trim();
+    setInput('');
+    setCouncilLoading(true);
+
+    const playerMsg: DialogueEntry = {
+      turn: currentChapter.current_turn,
+      speaker: 'player',
+      content: userMessage
+    };
+    setCouncilMessages(prev => [...prev, playerMsg]);
+
+    try {
+      if (onPrivateAudience) {
+        const advisors = ['lion', 'fox', 'balance'] as const;
+        for (const advisor of advisors) {
+          const response = await onPrivateAudience(advisor, userMessage);
+          if (response) {
+            const advisorResponse: DialogueEntry = {
+              turn: currentChapter.current_turn,
+              speaker: advisor,
+              content: response
+            };
+            setCouncilMessages(prev => [...prev, advisorResponse]);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('廷议讨论失败:', error);
+    } finally {
+      setCouncilLoading(false);
+    }
+  };
+
+  // 发布政令
+  const handleDecree = async () => {
+    if (!decreeInput.trim() || isLoading) return;
+
+    const result = await onSubmitDecision(decreeInput.trim());
+    if (result) {
+      // 后端会返回 decree_consequences，由 AI 基于《君主论》原则分析生成
+      setLastResult(result);
+      setGameMode('decree_result');
+    }
+    setDecreeInput('');
+    setShowDecreeModal(false);
+    setCouncilMessages([]);
+  };
+
+  // 开始密谈
+  const handleStartPrivateAudience = (advisor: string) => {
+    setPrivateTarget(advisor);
+    setPrivateMessages([]);
+    setGameMode('private_audience');
+  };
+
+  // 结束密谈
+  const handleEndPrivateAudience = () => {
+    setPrivateTarget(null);
+    setPrivateMessages([]);
+    setGameMode('council');
+  };
+
+  // 发送密谈消息
+  const handlePrivateMessage = async () => {
+    if (!input.trim() || privateLoading || !privateTarget) return;
+
+    const userMessage = input.trim();
+
+    const playerMsg: DialogueEntry = {
+      turn: currentChapter.current_turn,
+      speaker: 'player',
+      content: userMessage
+    };
+    setPrivateMessages(prev => [...prev, playerMsg]);
+    setInput('');
+    setPrivateLoading(true);
+
+    try {
+      if (onPrivateAudience) {
+        const response = await onPrivateAudience(privateTarget, userMessage);
+        if (response) {
+          const advisorResponse: DialogueEntry = {
+            turn: currentChapter.current_turn,
+            speaker: privateTarget as 'lion' | 'fox' | 'balance',
+            content: response
+          };
+          setPrivateMessages(prev => [...prev, advisorResponse]);
+        }
+      }
+    } catch (error) {
+      console.error('密谈失败:', error);
+    } finally {
+      setPrivateLoading(false);
+    }
+  };
+
+  // 进入下一个场景（继续处理影响）
+  const handleNextScene = () => {
+    // 保存当前的后果到活动后果列表
+    if (lastResult?.decree_consequences && lastResult.decree_consequences.length > 0) {
+      setActiveConsequences(lastResult.decree_consequences);
+      // 通知父组件继续处理后果
+      if (onContinueWithConsequences) {
+        onContinueWithConsequences(lastResult.decree_consequences);
+      }
+    }
+    setLastResult(null);
+    setGameMode('council');
+  };
+
+  // 过滤对话历史
+  const filteredDialogueHistory = dialogueHistory.filter(
+    entry => entry.speaker !== 'system'
+  );
+
+  // 渲染顾问头像
+  const renderAdvisorAvatars = () => (
+    <div style={{
+      position: 'absolute',
+      right: '20px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '16px',
+      zIndex: 10,
+    }}>
+      {(['lion', 'fox', 'balance'] as const).map((advisor) => {
+        const config = SPEAKER_CONFIG_LIGHT[advisor];
+        const relationData = gameState.relations[advisor as keyof typeof gameState.relations];
+        const trustValue = relationData?.trust ?? 50;
+        const isSelected = privateTarget === advisor;
+
+        return (
+          <div
+            key={advisor}
+            onClick={() => gameMode === 'council' && handleStartPrivateAudience(advisor)}
+            style={{
+              width: '60px',
+              height: '60px',
+              borderRadius: '50%',
+              backgroundColor: isSelected ? config.bgColor : theme.bg.card,
+              border: `3px solid ${config.color}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: gameMode === 'council' ? 'pointer' : 'default',
+              transition: 'all 0.3s ease',
+              boxShadow: isSelected ? `0 0 20px ${config.color}40` : theme.shadow.md,
+              opacity: gameMode === 'private_audience' && !isSelected ? 0.4 : 1,
+            }}
+            title={`单独召见${config.name} (信任: ${trustValue})`}
+          >
+            <span style={{ fontSize: '28px' }}>{config.icon}</span>
+          </div>
+        );
+      })}
+
+      {gameMode === 'council' && (
+        <div style={{
+          fontSize: '11px',
+          color: theme.text.muted,
+          textAlign: 'center',
+          marginTop: '8px',
+        }}>
+          点击召见
+        </div>
+      )}
+    </div>
+  );
+
+  // 渲染廷议模式
+  const renderCouncilMode = () => (
+    <>
+      {/* 顶部 */}
+      <div style={{
+        padding: '16px 20px',
+        borderBottom: `1px solid ${theme.border.light}`,
+        backgroundColor: theme.bg.card,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '16px' }}>🏛️</span>
+          <span style={{ color: theme.accent.goldDark, fontSize: '14px', fontWeight: 'bold' }}>廷议进行中</span>
+          <span style={{ color: theme.text.muted, fontSize: '12px' }}>与顾问讨论后发布政令</span>
+        </div>
+        <button
+          onClick={() => setShowDecreeModal(true)}
+          disabled={isLoading || gameState.game_over}
+          style={{
+            padding: '10px 24px',
+            background: isLoading || gameState.game_over
+              ? theme.border.medium
+              : `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
+            color: isLoading || gameState.game_over ? theme.text.muted : '#FFFFFF',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            cursor: isLoading || gameState.game_over ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            boxShadow: isLoading || gameState.game_over ? 'none' : theme.shadow.md,
+          }}
+        >
+          📜 发布政令
+        </button>
+      </div>
+
+      {/* 廷议对话区 */}
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '20px',
+        paddingRight: '100px',
+        backgroundColor: theme.bg.secondary,
+      }}>
+        {/* 当前正在处理的后果提示 */}
+        {activeConsequences.length > 0 && (
+          <div style={{
+            marginBottom: '20px',
+            padding: '16px',
+            backgroundColor: '#FFF7ED',
+            borderRadius: '12px',
+            border: '1px solid #FDBA7440',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              marginBottom: '12px',
+            }}>
+              <span style={{ fontSize: '18px' }}>🌊</span>
+              <span style={{ color: '#C2410C', fontWeight: 'bold', fontSize: '14px' }}>
+                正在处理政令后续影响
+              </span>
+              <button
+                onClick={() => setActiveConsequences([])}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '4px 8px',
+                  backgroundColor: 'transparent',
+                  border: '1px solid #FDBA74',
+                  borderRadius: '4px',
+                  color: '#C2410C',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                }}
+              >
+                清除
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {activeConsequences.map((c, idx) => {
+                const severityInfo = getSeverityInfo(c.severity);
+                return (
+                  <div key={c.id || idx} style={{
+                    padding: '10px 12px',
+                    backgroundColor: 'rgba(255,255,255,0.6)',
+                    borderRadius: '6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}>
+                    <span style={{ fontSize: '14px' }}>{getTypeIcon(c.type)}</span>
+                    <span style={{ color: severityInfo.color, fontWeight: 'bold', fontSize: '13px' }}>
+                      {c.title}
+                    </span>
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      backgroundColor: severityInfo.color,
+                      color: '#FFF',
+                      borderRadius: '3px',
+                    }}>
+                      {severityInfo.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{
+              marginTop: '12px',
+              fontSize: '12px',
+              color: theme.text.muted,
+            }}>
+              💡 请针对这些影响与顾问讨论，然后发布新政令来应对
+            </div>
+          </div>
+        )}
+
+        {/* 顾问建议 */}
+        {councilDebate && (
+          <div style={{
+            marginBottom: '24px',
+            padding: '20px',
+            backgroundColor: theme.bg.card,
+            borderRadius: '12px',
+            border: `1px solid ${theme.border.light}`,
+            boxShadow: theme.shadow.sm,
+          }}>
+            {councilDebate.lion && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '20px' }}>🦁</span>
+                  <span style={{ color: theme.advisor.lion, fontWeight: 'bold', fontSize: '13px' }}>狮子</span>
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '14px', lineHeight: '1.6', paddingLeft: '28px' }}>
+                  "{councilDebate.lion.suggestion}"
+                </div>
+              </div>
+            )}
+
+            {councilDebate.fox && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '20px' }}>🦊</span>
+                  <span style={{ color: theme.advisor.fox, fontWeight: 'bold', fontSize: '13px' }}>狐狸</span>
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '14px', lineHeight: '1.6', paddingLeft: '28px' }}>
+                  "{councilDebate.fox.suggestion}"
+                </div>
+              </div>
+            )}
+
+            {councilDebate.balance && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '20px' }}>⚖️</span>
+                  <span style={{ color: theme.advisor.balance, fontWeight: 'bold', fontSize: '13px' }}>天平</span>
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '14px', lineHeight: '1.6', paddingLeft: '28px' }}>
+                  "{councilDebate.balance.suggestion}"
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 对话历史 */}
+        {filteredDialogueHistory.map((entry, index) => {
+          const config = SPEAKER_CONFIG_LIGHT[entry.speaker] || SPEAKER_CONFIG_LIGHT.system;
+          const isPlayer = entry.speaker === 'player';
+
+          return (
+            <div
+              key={index}
+              style={{
+                marginBottom: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: isPlayer ? 'flex-end' : 'flex-start',
+              }}
+            >
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                marginBottom: '4px',
+                gap: '4px',
+              }}>
+                <span style={{ fontSize: '14px' }}>{config.icon}</span>
+                <span style={{ color: config.color, fontSize: '12px', fontWeight: 'bold' }}>
+                  {config.name}
+                </span>
+              </div>
+
+              <div style={{
+                maxWidth: '80%',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                backgroundColor: isPlayer ? '#E8F4FD' : theme.bg.card,
+                color: theme.text.primary,
+                fontSize: '14px',
+                lineHeight: '1.6',
+                whiteSpace: 'pre-wrap',
+                border: `1px solid ${isPlayer ? '#B3D9F7' : theme.border.light}`,
+                boxShadow: theme.shadow.sm,
+              }}>
+                {entry.content}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* 廷议讨论消息 */}
+        {councilMessages.map((entry, index) => {
+          const config = SPEAKER_CONFIG_LIGHT[entry.speaker] || SPEAKER_CONFIG_LIGHT.system;
+          const isPlayer = entry.speaker === 'player';
+
+          return (
+            <div
+              key={`council-${index}`}
+              style={{
+                marginBottom: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: isPlayer ? 'flex-end' : 'flex-start',
+              }}
+            >
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                marginBottom: '4px',
+                gap: '4px',
+              }}>
+                <span style={{ fontSize: '14px' }}>{config.icon}</span>
+                <span style={{ color: config.color, fontSize: '12px', fontWeight: 'bold' }}>
+                  {config.name}
+                </span>
+              </div>
+
+              <div style={{
+                maxWidth: '80%',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                backgroundColor: isPlayer ? '#E8F4FD' : config.bgColor,
+                color: theme.text.primary,
+                fontSize: '14px',
+                lineHeight: '1.6',
+                whiteSpace: 'pre-wrap',
+                border: `1px solid ${isPlayer ? '#B3D9F7' : theme.border.light}`,
+                boxShadow: theme.shadow.sm,
+              }}>
+                {entry.content}
+              </div>
+            </div>
+          );
+        })}
+
+        {(isLoading || councilLoading) && (
+          <div style={{ textAlign: 'center', color: theme.text.muted, padding: '20px' }}>
+            <span>顾问们正在思考...</span>
+          </div>
+        )}
+
+        <div ref={historyEndRef} />
+      </div>
+
+      {renderAdvisorAvatars()}
+
+      {/* 底部输入区 */}
+      <div style={{
+        padding: '16px 20px',
+        borderTop: `1px solid ${theme.border.light}`,
+        backgroundColor: theme.bg.card,
+      }}>
+        <div style={{ color: theme.text.muted, fontSize: '12px', marginBottom: '8px' }}>
+          💬 与顾问讨论（点击右侧头像可单独召见，或直接输入与所有顾问对话）
+        </div>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleCouncilDiscuss()}
+            placeholder="向顾问们提问或讨论..."
+            disabled={isLoading || gameState.game_over}
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              backgroundColor: theme.bg.input,
+              border: `1px solid ${theme.border.medium}`,
+              borderRadius: '8px',
+              color: theme.text.primary,
+              fontSize: '14px',
+              outline: 'none',
+            }}
+          />
+          <button
+            onClick={handleCouncilDiscuss}
+            disabled={isLoading || gameState.game_over || !input.trim()}
+            style={{
+              padding: '12px 20px',
+              backgroundColor: isLoading || gameState.game_over || !input.trim() ? theme.border.medium : theme.status.info,
+              color: isLoading || gameState.game_over || !input.trim() ? theme.text.muted : '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '14px',
+              cursor: isLoading || gameState.game_over || !input.trim() ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {councilLoading ? '...' : '发送'}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
+  // 渲染密谈模式
+  const renderPrivateAudienceMode = () => {
+    if (!privateTarget) return null;
+    const config = SPEAKER_CONFIG_LIGHT[privateTarget];
+
+    return (
+      <>
+        <div style={{
+          padding: '16px 20px',
+          backgroundColor: config.bgColor,
+          borderBottom: `2px solid ${config.color}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '32px' }}>{config.icon}</span>
+            <div>
+              <div style={{ color: config.color, fontSize: '18px', fontWeight: 'bold' }}>
+                单独召见 - {config.name}
+              </div>
+              <div style={{ color: theme.text.muted, fontSize: '12px' }}>
+                私密对话中... 其他顾问无法听到
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={handleEndPrivateAudience}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: theme.bg.card,
+              color: theme.text.primary,
+              border: `1px solid ${theme.border.medium}`,
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '13px',
+            }}
+          >
+            结束密谈
+          </button>
+        </div>
+
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '20px',
+          paddingRight: '100px',
+          backgroundColor: theme.bg.secondary,
+        }}>
+          {privateMessages.length === 0 && (
+            <div style={{
+              textAlign: 'center',
+              color: theme.text.muted,
+              padding: '40px 20px',
+              fontSize: '14px',
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>{config.icon}</div>
+              <div>"{config.name}恭敬地等待您的问话..."</div>
+              <div style={{
+                marginTop: '16px',
+                padding: '16px',
+                backgroundColor: theme.bg.card,
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: theme.text.secondary,
+                textAlign: 'left',
+                border: `1px solid ${theme.border.light}`,
+              }}>
+                <div style={{ marginBottom: '8px', color: config.color, fontWeight: 'bold' }}>💡 密谈提示：</div>
+                {privateTarget === 'lion' && (
+                  <div>狮子崇尚武力与威慑，相信"宁可被人畏惧，也不要被人爱戴"。在密谈中，他可能会透露一些强硬的建议...</div>
+                )}
+                {privateTarget === 'fox' && (
+                  <div>狐狸精通权谋与欺诈，相信"目的可以证明手段正当"。在密谈中，他可能会提供一些...不太光明的计策...</div>
+                )}
+                {privateTarget === 'balance' && (
+                  <div>天平追求公正与稳定，相信"明智的君主应当建立在人民的支持之上"。在密谈中，他会给出更为中庸的建议...</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {privateMessages.map((entry, index) => {
+            const msgConfig = SPEAKER_CONFIG_LIGHT[entry.speaker];
+            const isPlayer = entry.speaker === 'player';
+
+            return (
+              <div
+                key={index}
+                style={{
+                  marginBottom: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: isPlayer ? 'flex-end' : 'flex-start',
+                }}
+              >
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  marginBottom: '4px',
+                  gap: '4px',
+                }}>
+                  <span style={{ fontSize: '14px' }}>{msgConfig.icon}</span>
+                  <span style={{ color: msgConfig.color, fontSize: '12px', fontWeight: 'bold' }}>
+                    {msgConfig.name}
+                  </span>
+                </div>
+
+                <div style={{
+                  maxWidth: '80%',
+                  padding: '12px 16px',
+                  borderRadius: '12px',
+                  backgroundColor: isPlayer ? '#E8F4FD' : config.bgColor,
+                  color: theme.text.primary,
+                  fontSize: '14px',
+                  lineHeight: '1.6',
+                  border: `1px solid ${isPlayer ? '#B3D9F7' : theme.border.light}`,
+                  whiteSpace: 'pre-wrap',
+                  boxShadow: theme.shadow.sm,
+                }}>
+                  {entry.content}
+                </div>
+              </div>
+            );
+          })}
+
+          {privateLoading && (
+            <div style={{ textAlign: 'center', color: config.color, padding: '20px' }}>
+              <span>{config.name}正在思考...</span>
+            </div>
+          )}
+
+          <div ref={historyEndRef} />
+        </div>
+
+        {renderAdvisorAvatars()}
+
+        <div style={{
+          padding: '16px 20px',
+          borderTop: `1px solid ${theme.border.light}`,
+          backgroundColor: theme.bg.card,
+        }}>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handlePrivateMessage()}
+              placeholder={`与${config.name}密谈...`}
+              disabled={privateLoading}
+              style={{
+                flex: 1,
+                padding: '12px 16px',
+                backgroundColor: theme.bg.input,
+                border: `1px solid ${config.color}40`,
+                borderRadius: '8px',
+                color: theme.text.primary,
+                fontSize: '14px',
+                outline: 'none',
+              }}
+            />
+            <button
+              onClick={handlePrivateMessage}
+              disabled={privateLoading || !input.trim()}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: privateLoading || !input.trim() ? theme.border.medium : config.color,
+                color: privateLoading || !input.trim() ? theme.text.muted : '#FFFFFF',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: 'bold',
+                cursor: privateLoading || !input.trim() ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {privateLoading ? '...' : '发送'}
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  // 获取影响严重程度的颜色和图标
+  const getSeverityInfo = (severity: string) => {
+    switch (severity) {
+      case 'critical': return { color: '#DC2626', bgColor: '#FEE2E2', icon: '🔥', label: '危急' };
+      case 'high': return { color: '#EA580C', bgColor: '#FFEDD5', icon: '⚠️', label: '严重' };
+      case 'medium': return { color: '#D97706', bgColor: '#FEF3C7', icon: '📢', label: '中等' };
+      default: return { color: '#059669', bgColor: '#D1FAE5', icon: '📋', label: '轻微' };
+    }
+  };
+
+  // 获取影响类型的图标
+  const getTypeIcon = (type: string) => {
+    switch (type) {
+      case 'political': return '🏛️';
+      case 'economic': return '💰';
+      case 'military': return '⚔️';
+      case 'social': return '👥';
+      case 'diplomatic': return '🤝';
+      default: return '📜';
+    }
+  };
+
+  // 处理跳过后续影响，直接进入下一关
+  const handleSkipConsequences = () => {
+    if (lastResult?.decree_consequences && onSkipConsequences) {
+      onSkipConsequences(lastResult.decree_consequences);
+    }
+    if (onNextChapter) {
+      onNextChapter();
+    }
+  };
+
+  // 渲染政令结果
+  const renderDecreeResult = () => {
+    if (!lastResult) return null;
+
+    // 判断关卡是否结束
+    const chapterEnded = lastResult.chapter_result?.chapter_ended;
+    const hasNextChapter = lastResult.next_chapter_available;
+    const isVictory = lastResult.chapter_result?.victory;
+
+    // 获取政令后续影响
+    const consequences = lastResult.decree_consequences || [];
+    const hasConsequences = consequences.length > 0;
+
+    return (
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        padding: '40px',
+        overflowY: 'auto',
+        backgroundColor: theme.bg.secondary,
+      }}>
+        <div style={{
+          maxWidth: '700px',
+          width: '100%',
+          backgroundColor: theme.bg.card,
+          borderRadius: '16px',
+          border: `1px solid ${theme.border.light}`,
+          padding: '32px',
+          boxShadow: theme.shadow.lg,
+        }}>
+          <h2 style={{
+            color: theme.accent.goldDark,
+            fontSize: '24px',
+            textAlign: 'center',
+            marginBottom: '24px',
+          }}>
+            📜 政令已发布
+          </h2>
+
+          {/* 关卡结束提示 */}
+          {chapterEnded && (
+            <div style={{
+              padding: '16px',
+              marginBottom: '20px',
+              borderRadius: '12px',
+              backgroundColor: isVictory ? theme.status.successBg : theme.status.errorBg,
+              border: `1px solid ${isVictory ? theme.status.success : theme.status.error}30`,
+              textAlign: 'center',
+            }}>
+              <div style={{ fontSize: '32px', marginBottom: '8px' }}>
+                {isVictory ? '🎉' : '💀'}
+              </div>
+              <div style={{
+                color: isVictory ? theme.status.success : theme.status.error,
+                fontSize: '18px',
+                fontWeight: 'bold',
+              }}>
+                {isVictory ? '关卡通过！' : '关卡失败'}
+              </div>
+              {lastResult.chapter_result?.reason && (
+                <div style={{
+                  color: theme.text.secondary,
+                  fontSize: '14px',
+                  marginTop: '8px',
+                }}>
+                  {lastResult.chapter_result.reason}
+                </div>
+              )}
+            </div>
+          )}
+
+          {lastResult.judgment_metadata && (
+            <div style={{
+              backgroundColor: '#FEF3C7',
+              borderRadius: '12px',
+              padding: '20px',
+              marginBottom: '20px',
+              border: `1px solid ${theme.accent.gold}30`,
+            }}>
+              <h3 style={{ color: theme.accent.goldDark, fontSize: '16px', marginBottom: '16px' }}>
+                📊 君主论审视
+              </h3>
+              <div style={{ color: theme.text.secondary, fontSize: '14px', lineHeight: '1.8' }}>
+                <p style={{ fontStyle: 'italic', marginBottom: '16px' }}>
+                  "{lastResult.judgment_metadata.machiavelli_critique}"
+                </p>
+                <div style={{ display: 'grid', gap: '8px' }}>
+                  <div><span style={{ color: theme.text.muted }}>策略风格:</span> {lastResult.judgment_metadata.player_strategy}</div>
+                  <div><span style={{ color: theme.text.muted }}>展现特质:</span> {lastResult.judgment_metadata.machiavelli_traits.join('、')}</div>
+                  <div><span style={{ color: theme.text.muted }}>结局评级:</span> {lastResult.judgment_metadata.outcome_level}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {lastResult.power_changes && (
+            <div style={{
+              backgroundColor: theme.bg.secondary,
+              borderRadius: '12px',
+              padding: '20px',
+              marginBottom: '20px',
+              border: `1px solid ${theme.border.light}`,
+            }}>
+              <h3 style={{ color: theme.text.secondary, fontSize: '14px', marginBottom: '12px' }}>
+                权力变化
+              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-around' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: lastResult.power_changes.authority >= 0 ? theme.status.success : theme.status.error, fontSize: '20px', fontWeight: 'bold' }}>
+                    {lastResult.power_changes.authority >= 0 ? '+' : ''}{lastResult.power_changes.authority}
+                  </div>
+                  <div style={{ color: theme.text.muted, fontSize: '12px' }}>权威</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: lastResult.power_changes.fear >= 0 ? theme.status.success : theme.status.error, fontSize: '20px', fontWeight: 'bold' }}>
+                    {lastResult.power_changes.fear >= 0 ? '+' : ''}{lastResult.power_changes.fear}
+                  </div>
+                  <div style={{ color: theme.text.muted, fontSize: '12px' }}>恐惧</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: lastResult.power_changes.love >= 0 ? theme.status.success : theme.status.error, fontSize: '20px', fontWeight: 'bold' }}>
+                    {lastResult.power_changes.love >= 0 ? '+' : ''}{lastResult.power_changes.love}
+                  </div>
+                  <div style={{ color: theme.text.muted, fontSize: '12px' }}>民心</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {lastResult.advisor_responses && (
+            <div style={{
+              backgroundColor: theme.bg.secondary,
+              borderRadius: '12px',
+              padding: '20px',
+              marginBottom: '20px',
+              border: `1px solid ${theme.border.light}`,
+            }}>
+              <h3 style={{ color: theme.text.secondary, fontSize: '14px', marginBottom: '12px' }}>
+                顾问反应
+              </h3>
+              {lastResult.advisor_responses.lion && (
+                <div style={{ marginBottom: '12px' }}>
+                  <span style={{ color: theme.advisor.lion, fontWeight: 'bold' }}>🦁 狮子:</span>
+                  <span style={{ color: theme.text.secondary, marginLeft: '8px' }}>{lastResult.advisor_responses.lion}</span>
+                </div>
+              )}
+              {lastResult.advisor_responses.fox && (
+                <div style={{ marginBottom: '12px' }}>
+                  <span style={{ color: theme.advisor.fox, fontWeight: 'bold' }}>🦊 狐狸:</span>
+                  <span style={{ color: theme.text.secondary, marginLeft: '8px' }}>{lastResult.advisor_responses.fox}</span>
+                </div>
+              )}
+              {lastResult.advisor_responses.balance && (
+                <div>
+                  <span style={{ color: theme.advisor.balance, fontWeight: 'bold' }}>⚖️ 天平:</span>
+                  <span style={{ color: theme.text.secondary, marginLeft: '8px' }}>{lastResult.advisor_responses.balance}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 政令后续影响 */}
+          {hasConsequences && (
+            <div style={{
+              backgroundColor: '#FFF7ED',
+              borderRadius: '12px',
+              padding: '20px',
+              marginBottom: '20px',
+              border: `1px solid #FDBA7440`,
+            }}>
+              <h3 style={{
+                color: '#C2410C',
+                fontSize: '16px',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}>
+                🌊 政令后续影响
+                <span style={{
+                  fontSize: '12px',
+                  fontWeight: 'normal',
+                  color: theme.text.muted,
+                }}>
+                  （共 {consequences.length} 项需要关注）
+                </span>
+              </h3>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {consequences.map((consequence, index) => {
+                  const severityInfo = getSeverityInfo(consequence.severity);
+                  const typeIcon = getTypeIcon(consequence.type);
+
+                  return (
+                    <div
+                      key={consequence.id || index}
+                      style={{
+                        backgroundColor: severityInfo.bgColor,
+                        borderRadius: '8px',
+                        padding: '16px',
+                        border: `1px solid ${severityInfo.color}30`,
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        marginBottom: '8px',
+                      }}>
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}>
+                          <span style={{ fontSize: '18px' }}>{typeIcon}</span>
+                          <span style={{
+                            color: severityInfo.color,
+                            fontWeight: 'bold',
+                            fontSize: '14px',
+                          }}>
+                            {consequence.title}
+                          </span>
+                        </div>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '2px 8px',
+                          backgroundColor: severityInfo.color,
+                          color: '#FFFFFF',
+                          borderRadius: '4px',
+                          fontWeight: 'bold',
+                        }}>
+                          {severityInfo.icon} {severityInfo.label}
+                        </span>
+                      </div>
+
+                      <p style={{
+                        color: theme.text.secondary,
+                        fontSize: '13px',
+                        lineHeight: '1.6',
+                        margin: '0 0 12px 0',
+                      }}>
+                        {consequence.description}
+                      </p>
+
+                      {consequence.potential_outcomes && consequence.potential_outcomes.length > 0 && (
+                        <div style={{
+                          backgroundColor: 'rgba(255,255,255,0.5)',
+                          borderRadius: '6px',
+                          padding: '10px 12px',
+                        }}>
+                          <div style={{
+                            fontSize: '11px',
+                            color: theme.text.muted,
+                            marginBottom: '6px',
+                          }}>
+                            可能的后果：
+                          </div>
+                          <ul style={{
+                            margin: 0,
+                            paddingLeft: '16px',
+                            fontSize: '12px',
+                            color: theme.text.secondary,
+                          }}>
+                            {consequence.potential_outcomes.map((outcome, i) => (
+                              <li key={i} style={{ marginBottom: '4px' }}>{outcome}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {consequence.deadline_turns && (
+                        <div style={{
+                          marginTop: '10px',
+                          fontSize: '11px',
+                          color: severityInfo.color,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}>
+                          ⏰ 若不处理，将在 {consequence.deadline_turns} 回合后自动触发
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* 提示 */}
+              <div style={{
+                marginTop: '16px',
+                padding: '12px',
+                backgroundColor: 'rgba(255,255,255,0.6)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: theme.text.secondary,
+                lineHeight: '1.6',
+              }}>
+                💡 <strong>提示：</strong>你可以选择继续处理这些影响，或者跳过它们直接进入下一关。
+                跳过的影响将会累积，可能在后续关卡中以更严重的形式爆发。
+              </div>
+            </div>
+          )}
+
+          {/* 底部按钮区域 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {/* 有后续影响时的选项 */}
+            {hasConsequences && !chapterEnded && (
+              <>
+                <button
+                  onClick={handleNextScene}
+                  style={{
+                    width: '100%',
+                    padding: '16px',
+                    background: `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
+                    color: '#FFFFFF',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    boxShadow: theme.shadow.md,
+                  }}
+                >
+                  🔄 继续处理影响
+                </button>
+                <button
+                  onClick={handleSkipConsequences}
+                  style={{
+                    width: '100%',
+                    padding: '14px',
+                    background: theme.bg.secondary,
+                    color: theme.text.secondary,
+                    border: `1px solid ${theme.border.medium}`,
+                    borderRadius: '10px',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  ⏭️ 跳过影响，进入下一关
+                  <span style={{
+                    fontSize: '11px',
+                    color: theme.status.warning,
+                  }}>
+                    （影响将累积）
+                  </span>
+                </button>
+              </>
+            )}
+
+            {/* 无后续影响且关卡未结束时 */}
+            {!hasConsequences && !chapterEnded && (
+              <button
+                onClick={handleNextScene}
+                style={{
+                  width: '100%',
+                  padding: '16px',
+                  background: `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  boxShadow: theme.shadow.md,
+                }}
+              >
+                继续 →
+              </button>
+            )}
+
+            {/* 关卡结束且有下一关时显示进入下一关按钮 */}
+            {chapterEnded && hasNextChapter && onNextChapter && (
+              <button
+                onClick={onNextChapter}
+                style={{
+                  width: '100%',
+                  padding: '16px',
+                  background: `linear-gradient(135deg, ${theme.status.success} 0%, #38A169 100%)`,
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  boxShadow: theme.shadow.md,
+                }}
+              >
+                🚀 进入下一关
+              </button>
+            )}
+
+            {/* 关卡结束但没有下一关（失败或通关）时返回关卡选择 */}
+            {chapterEnded && !hasNextChapter && onNextChapter && (
+              <button
+                onClick={onNextChapter}
+                style={{
+                  width: '100%',
+                  padding: '16px',
+                  background: theme.bg.secondary,
+                  color: theme.text.primary,
+                  border: `1px solid ${theme.border.medium}`,
+                  borderRadius: '10px',
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                }}
+              >
+                返回关卡选择
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: '320px 1fr 380px',
-      gap: '20px',
-      height: 'calc(100vh - 80px)',
-      padding: '20px',
+      gridTemplateColumns: '280px 1fr',
+      gap: '0',
+      height: 'calc(100vh - 60px)',
+      backgroundColor: theme.bg.primary,
     }}>
-      {/* 左侧：权力面板 + 关卡信息 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto' }}>
-        {/* 权力三维 */}
-        <PowerMeter power={gameState.power} hideValues={currentChapter.hide_values} />
-
+      {/* 左侧栏 */}
+      <div style={{
+        backgroundColor: theme.bg.card,
+        borderRight: `1px solid ${theme.border.light}`,
+        display: 'flex',
+        flexDirection: 'column',
+        overflowY: 'auto',
+      }}>
         {/* 关卡信息 */}
         <div style={{
           padding: '16px',
-          backgroundColor: '#1a1a2e',
-          borderRadius: '8px',
-          border: '1px solid #333',
+          borderBottom: `1px solid ${theme.border.light}`,
+          backgroundColor: '#FEF3C7',
         }}>
-          <h4 style={{
-            margin: '0 0 12px 0',
-            color: '#ffd700',
-            fontSize: '14px',
-          }}>
+          <div style={{ color: theme.accent.goldDark, fontSize: '14px', fontWeight: 'bold', marginBottom: '4px' }}>
             📜 {currentChapter.name}
-          </h4>
-          <div style={{
-            color: '#888',
-            fontSize: '12px',
-            lineHeight: '1.6',
-            marginBottom: '12px',
-          }}>
-            {currentChapter.dilemma}
           </div>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            paddingTop: '12px',
-            borderTop: '1px solid #333',
-          }}>
-            <span style={{ color: '#888', fontSize: '12px' }}>回合进度</span>
-            <span style={{ color: '#ffd700', fontSize: '14px' }}>
-              {currentChapter.current_turn} / {currentChapter.max_turns}
-            </span>
+          <div style={{ color: theme.text.muted, fontSize: '12px' }}>
+            回合 {currentChapter.current_turn}/{currentChapter.max_turns}
           </div>
         </div>
 
-        {/* 信用积分 */}
-        <div style={{
-          padding: '16px',
-          backgroundColor: '#1a1a2e',
-          borderRadius: '8px',
-          border: '1px solid #333',
-        }}>
+        {/* 回合背景 */}
+        <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}` }}>
+          <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 10px 0' }}>📖 当前困境</h4>
+          <div style={{ color: theme.text.primary, fontSize: '13px', lineHeight: '1.7' }}>
+            {currentChapter.dilemma}
+          </div>
+        </div>
+
+        {/* 场景快照 */}
+        {currentChapter.scene_snapshot && (
+          <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}` }}>
+            <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 10px 0' }}>🎭 场景</h4>
+            <div style={{ color: theme.text.secondary, fontSize: '12px', lineHeight: '1.6', fontStyle: 'italic' }}>
+              {currentChapter.scene_snapshot}
+            </div>
+          </div>
+        )}
+
+        {/* 权力状态 */}
+        <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}` }}>
+          <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 12px 0' }}>⚔️ 权力状态</h4>
+          <PowerMeter power={gameState.power} hideValues={currentChapter.hide_values} compact />
+
           <div style={{
+            marginTop: '12px',
+            padding: '10px',
+            backgroundColor: theme.bg.secondary,
+            borderRadius: '6px',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
           }}>
-            <span style={{ color: '#888', fontSize: '13px' }}>💳 信用积分</span>
+            <span style={{ color: theme.text.muted, fontSize: '12px' }}>💳 信用</span>
             <span style={{
-              color: gameState.credit_score > 50 ? '#4ade80' : gameState.credit_score > 20 ? '#ffd700' : '#ef4444',
-              fontSize: '18px',
+              color: gameState.credit_score > 50 ? theme.status.success : gameState.credit_score > 20 ? theme.status.warning : theme.status.error,
+              fontSize: '14px',
               fontWeight: 'bold',
             }}>
               {gameState.credit_score.toFixed(0)}
             </span>
           </div>
-          {gameState.active_promises > 0 && (
-            <div style={{
-              marginTop: '8px',
-              color: '#888',
-              fontSize: '12px',
-            }}>
-              📝 待履行承诺: {gameState.active_promises}
-            </div>
-          )}
-          {gameState.leverages_against_you > 0 && (
-            <div style={{
-              marginTop: '4px',
-              color: '#ef4444',
-              fontSize: '12px',
-            }}>
-              📎 被握把柄: {gameState.leverages_against_you}
+
+          {(gameState.active_promises > 0 || gameState.leverages_against_you > 0) && (
+            <div style={{ marginTop: '8px', fontSize: '11px' }}>
+              {gameState.active_promises > 0 && (
+                <div style={{ color: theme.text.muted }}>📝 待履行承诺: {gameState.active_promises}</div>
+              )}
+              {gameState.leverages_against_you > 0 && (
+                <div style={{ color: theme.status.error }}>📎 被握把柄: {gameState.leverages_against_you}</div>
+              )}
             </div>
           )}
         </div>
 
-        {/* 警告信息 */}
-        {gameState.warnings && gameState.warnings.length > 0 && (
-          <div style={{
-            padding: '16px',
-            backgroundColor: '#2d1515',
-            borderRadius: '8px',
-            border: '1px solid #ef444450',
-          }}>
-            <h4 style={{ margin: '0 0 8px 0', color: '#ef4444', fontSize: '14px' }}>
-              ⚠️ 警告
-            </h4>
-            {gameState.warnings.map((warning, index) => (
+        {/* 顾问关系 */}
+        <div style={{ padding: '16px', flex: 1 }}>
+          <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 12px 0' }}>👥 顾问关系</h4>
+
+          {(['lion', 'fox', 'balance'] as const).map((advisor) => {
+            const config = SPEAKER_CONFIG_LIGHT[advisor];
+            const relationData = gameState.relations[advisor as keyof typeof gameState.relations];
+            const trustValue = relationData?.trust ?? 50;
+
+            return (
               <div
-                key={index}
+                key={advisor}
                 style={{
-                  color: '#fca5a5',
-                  fontSize: '13px',
-                  marginBottom: '4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '8px',
+                  marginBottom: '6px',
+                  backgroundColor: theme.bg.secondary,
+                  borderRadius: '6px',
+                  border: privateTarget === advisor ? `1px solid ${config.color}` : `1px solid ${theme.border.light}`,
                 }}
               >
+                <span style={{ fontSize: '18px', marginRight: '8px' }}>{config.icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: config.color, fontSize: '12px', fontWeight: 'bold' }}>{config.name}</div>
+                  <div style={{
+                    marginTop: '3px',
+                    height: '3px',
+                    backgroundColor: theme.border.light,
+                    borderRadius: '2px',
+                    overflow: 'hidden',
+                  }}>
+                    <div style={{
+                      width: `${Math.max(0, Math.min(100, trustValue))}%`,
+                      height: '100%',
+                      backgroundColor: trustValue > 50 ? theme.status.success : trustValue > 20 ? theme.status.warning : theme.status.error,
+                      transition: 'width 0.3s ease',
+                    }} />
+                  </div>
+                </div>
+                <span style={{
+                  color: trustValue > 50 ? theme.status.success : trustValue > 20 ? theme.status.warning : theme.status.error,
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  marginLeft: '8px',
+                  minWidth: '24px',
+                  textAlign: 'right',
+                }}>
+                  {trustValue}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 警告 */}
+        {gameState.warnings && gameState.warnings.length > 0 && (
+          <div style={{
+            padding: '12px 16px',
+            backgroundColor: theme.status.errorBg,
+            borderTop: `1px solid ${theme.status.error}50`,
+          }}>
+            <h4 style={{ color: theme.status.error, fontSize: '11px', margin: '0 0 6px 0' }}>⚠️ 警告</h4>
+            {gameState.warnings.map((warning, index) => (
+              <div key={index} style={{ color: theme.status.error, fontSize: '11px', marginBottom: '3px' }}>
                 • {warning}
               </div>
             ))}
@@ -152,258 +1347,123 @@ export function GameBoard({
         {/* 游戏结束 */}
         {gameState.game_over && (
           <div style={{
-            padding: '20px',
-            backgroundColor: '#1a0a0a',
-            borderRadius: '8px',
-            border: '2px solid #ef4444',
+            padding: '16px',
+            backgroundColor: theme.status.errorBg,
             textAlign: 'center',
           }}>
-            <div style={{ fontSize: '24px', marginBottom: '8px' }}>💀</div>
-            <div style={{
-              color: '#ef4444',
-              fontSize: '18px',
-              fontWeight: 'bold',
-              marginBottom: '8px',
-            }}>
-              统治终结
-            </div>
-            <div style={{
-              color: '#fca5a5',
-              fontSize: '14px',
-              lineHeight: '1.5',
-            }}>
+            <div style={{ fontSize: '28px', marginBottom: '6px' }}>💀</div>
+            <div style={{ color: theme.status.error, fontSize: '14px', fontWeight: 'bold' }}>统治终结</div>
+            <div style={{ color: theme.status.error, fontSize: '12px', marginTop: '6px' }}>
               {gameState.game_over_reason}
             </div>
           </div>
         )}
       </div>
 
-      {/* 中间：对话面板 */}
-      <ChatPanel
-        history={dialogueHistory}
-        onSubmit={handleSubmit}
-        isLoading={isLoading}
-        disabled={gameState.game_over}
-      />
-
-      {/* 右侧：顾问建议 */}
+      {/* 右侧：主对话区域 */}
       <div style={{
-        overflowY: 'auto',
-        paddingRight: '8px',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        overflow: 'hidden',
       }}>
-        <h3 style={{
-          margin: '0 0 16px 0',
-          color: '#ffd700',
-          fontSize: '16px',
+        {gameMode === 'council' && renderCouncilMode()}
+        {gameMode === 'private_audience' && renderPrivateAudienceMode()}
+        {gameMode === 'decree_result' && renderDecreeResult()}
+      </div>
+
+      {/* 发布政令弹窗 */}
+      {showDecreeModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
           display: 'flex',
           alignItems: 'center',
-          gap: '8px',
+          justifyContent: 'center',
+          zIndex: 1000,
         }}>
-          👥 顾问建议
-        </h3>
-
-        <p style={{
-          color: '#888',
-          fontSize: '12px',
-          marginBottom: '16px',
-        }}>
-          点击顾问卡片采纳其建议（可选）
-        </p>
-
-        {/* 狮子建议 */}
-        {lionSuggestion && (
-          <div
-            onClick={() => setSelectedAdvisor(selectedAdvisor === 'lion' ? null : 'lion')}
-            style={{
-              marginBottom: '16px',
-              padding: '16px',
-              backgroundColor: selectedAdvisor === 'lion' ? '#2d1515' : '#1a1a2e',
-              borderRadius: '12px',
-              border: `2px solid ${selectedAdvisor === 'lion' ? '#ef4444' : '#333'}`,
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-            }}
-          >
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '12px',
-            }}>
-              <span style={{ fontSize: '24px' }}>🦁</span>
-              <span style={{ color: '#ef4444', fontWeight: 'bold' }}>狮子 (Leo)</span>
-              {selectedAdvisor === 'lion' && (
-                <span style={{
-                  marginLeft: 'auto',
-                  color: '#ef4444',
-                  fontSize: '12px',
-                  padding: '2px 8px',
-                  backgroundColor: '#ef444420',
-                  borderRadius: '4px',
-                }}>
-                  已选择
-                </span>
-              )}
-            </div>
-            <div style={{
-              color: '#fff',
-              fontSize: '14px',
-              marginBottom: '8px',
-              lineHeight: '1.5',
-            }}>
-              "{lionSuggestion.suggestion}"
-            </div>
-            <div style={{
-              color: '#888',
-              fontSize: '12px',
-              fontStyle: 'italic',
-            }}>
-              {lionSuggestion.reasoning}
-            </div>
-          </div>
-        )}
-
-        {/* 狐狸建议 */}
-        {foxSuggestion && (
-          <div
-            onClick={() => setSelectedAdvisor(selectedAdvisor === 'fox' ? null : 'fox')}
-            style={{
-              marginBottom: '16px',
-              padding: '16px',
-              backgroundColor: selectedAdvisor === 'fox' ? '#1a1a2d' : '#1a1a2e',
-              borderRadius: '12px',
-              border: `2px solid ${selectedAdvisor === 'fox' ? '#a855f7' : '#333'}`,
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-            }}
-          >
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '12px',
-            }}>
-              <span style={{ fontSize: '24px' }}>🦊</span>
-              <span style={{ color: '#a855f7', fontWeight: 'bold' }}>狐狸 (Vulpes)</span>
-              {selectedAdvisor === 'fox' && (
-                <span style={{
-                  marginLeft: 'auto',
-                  color: '#a855f7',
-                  fontSize: '12px',
-                  padding: '2px 8px',
-                  backgroundColor: '#a855f720',
-                  borderRadius: '4px',
-                }}>
-                  已选择
-                </span>
-              )}
-            </div>
-            <div style={{
-              color: '#fff',
-              fontSize: '14px',
-              marginBottom: '8px',
-              lineHeight: '1.5',
-            }}>
-              "{foxSuggestion.suggestion}"
-            </div>
-            <div style={{
-              color: '#888',
-              fontSize: '12px',
-              fontStyle: 'italic',
-            }}>
-              {foxSuggestion.reasoning}
-            </div>
-          </div>
-        )}
-
-        {/* 天平建议（如果存在） */}
-        {balanceSuggestion && (
-          <div
-            onClick={() => setSelectedAdvisor(selectedAdvisor === 'balance' ? null : 'balance')}
-            style={{
-              marginBottom: '16px',
-              padding: '16px',
-              backgroundColor: selectedAdvisor === 'balance' ? '#0a1a0a' : '#1a1a2e',
-              borderRadius: '12px',
-              border: `2px solid ${selectedAdvisor === 'balance' ? '#22c55e' : '#333'}`,
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-            }}
-          >
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '12px',
-            }}>
-              <span style={{ fontSize: '24px' }}>⚖️</span>
-              <span style={{ color: '#22c55e', fontWeight: 'bold' }}>天平 (Libra)</span>
-              {selectedAdvisor === 'balance' && (
-                <span style={{
-                  marginLeft: 'auto',
-                  color: '#22c55e',
-                  fontSize: '12px',
-                  padding: '2px 8px',
-                  backgroundColor: '#22c55e20',
-                  borderRadius: '4px',
-                }}>
-                  已选择
-                </span>
-              )}
-            </div>
-            <div style={{
-              color: '#fff',
-              fontSize: '14px',
-              marginBottom: '8px',
-              lineHeight: '1.5',
-            }}>
-              "{balanceSuggestion.suggestion}"
-            </div>
-            <div style={{
-              color: '#888',
-              fontSize: '12px',
-              fontStyle: 'italic',
-            }}>
-              {balanceSuggestion.reasoning}
-            </div>
-          </div>
-        )}
-
-        {/* 顾问关系状态 */}
-        <div style={{
-          marginTop: '24px',
-          padding: '16px',
-          backgroundColor: '#1a1a2e',
-          borderRadius: '8px',
-          border: '1px solid #333',
-        }}>
-          <h4 style={{
-            margin: '0 0 12px 0',
-            color: '#888',
-            fontSize: '12px',
+          <div style={{
+            width: '500px',
+            backgroundColor: theme.bg.card,
+            borderRadius: '16px',
+            border: `2px solid ${theme.accent.gold}`,
+            padding: '32px',
+            boxShadow: theme.shadow.lg,
           }}>
-            顾问关系
-          </h4>
-          <RobotCard
-            type="lion"
-            response=""
-            relation={gameState.relations.lion}
-            compact
-          />
-          <RobotCard
-            type="fox"
-            response=""
-            relation={gameState.relations.fox}
-            compact
-          />
-          <RobotCard
-            type="balance"
-            response=""
-            relation={gameState.relations.balance}
-            compact
-          />
+            <h2 style={{
+              color: theme.accent.goldDark,
+              fontSize: '24px',
+              margin: '0 0 8px 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}>
+              📜 发布政令
+            </h2>
+            <p style={{ color: theme.text.muted, fontSize: '14px', margin: '0 0 24px 0' }}>
+              政令一经发布，本回合即结束。请谨慎决策。
+            </p>
+
+            <textarea
+              value={decreeInput}
+              onChange={(e) => setDecreeInput(e.target.value)}
+              placeholder="输入你的政令..."
+              autoFocus
+              style={{
+                width: '100%',
+                height: '150px',
+                padding: '16px',
+                backgroundColor: theme.bg.secondary,
+                border: `1px solid ${theme.border.medium}`,
+                borderRadius: '8px',
+                color: theme.text.primary,
+                fontSize: '14px',
+                resize: 'none',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+
+            <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+              <button
+                onClick={() => setShowDecreeModal(false)}
+                style={{
+                  flex: 1,
+                  padding: '14px',
+                  backgroundColor: theme.bg.secondary,
+                  color: theme.text.primary,
+                  border: `1px solid ${theme.border.medium}`,
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleDecree}
+                disabled={!decreeInput.trim() || isLoading}
+                style={{
+                  flex: 1,
+                  padding: '14px',
+                  background: !decreeInput.trim() || isLoading
+                    ? theme.border.medium
+                    : `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
+                  color: !decreeInput.trim() || isLoading ? theme.text.muted : '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: !decreeInput.trim() || isLoading ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {isLoading ? '发布中...' : '确认发布'}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
-// 最终审计结果面板
+// 最终审计结果面板 - 浅色主题
 
 import type { FinalAudit } from '../types/game';
+import { theme } from '../theme';
 
 interface FinalAuditPanelProps {
   audit: FinalAudit;
@@ -10,11 +11,11 @@ interface FinalAuditPanelProps {
 export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
   const getReputationColor = (reputation: string) => {
     switch (reputation) {
-      case '明君': return '#4ade80';
-      case '暴君': return '#ef4444';
-      case '骗子': return '#a855f7';
-      case '庸主': return '#888';
-      default: return '#ffd700';
+      case '明君': return theme.status.success;
+      case '暴君': return theme.status.error;
+      case '骗子': return theme.advisor.fox;
+      case '庸主': return theme.text.muted;
+      default: return theme.accent.gold;
     }
   };
 
@@ -33,7 +34,7 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
   return (
     <div style={{
       minHeight: '100vh',
-      backgroundColor: '#0a0a14',
+      backgroundColor: theme.bg.primary,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -42,17 +43,18 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
       <div style={{
         maxWidth: '800px',
         width: '100%',
-        backgroundColor: '#0f0f1a',
+        backgroundColor: theme.bg.card,
         borderRadius: '16px',
-        border: '2px solid #333',
+        border: `1px solid ${theme.border.light}`,
         overflow: 'hidden',
+        boxShadow: theme.shadow.lg,
       }}>
         {/* 头部 */}
         <div style={{
           padding: '40px',
           textAlign: 'center',
-          borderBottom: '1px solid #333',
-          background: 'linear-gradient(180deg, #1a1a2e 0%, #0f0f1a 100%)',
+          borderBottom: `1px solid ${theme.border.light}`,
+          background: `linear-gradient(180deg, ${theme.bg.secondary} 0%, ${theme.bg.card} 100%)`,
         }}>
           <div style={{
             fontSize: '64px',
@@ -70,7 +72,7 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
           </h1>
           <p style={{
             margin: '12px 0 0 0',
-            color: '#888',
+            color: theme.text.secondary,
             fontSize: '16px',
           }}>
             五重试炼完成 - 最终审计报告
@@ -81,17 +83,17 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
         <div style={{
           padding: '32px',
           textAlign: 'center',
-          borderBottom: '1px solid #333',
+          borderBottom: `1px solid ${theme.border.light}`,
         }}>
           <div style={{
-            color: '#ffd700',
+            color: theme.accent.gold,
             fontSize: '64px',
             fontWeight: 'bold',
           }}>
             {audit.final_score}
           </div>
           <div style={{
-            color: '#888',
+            color: theme.text.secondary,
             fontSize: '14px',
           }}>
             最终评分
@@ -107,156 +109,164 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
         }}>
           {/* 决策统计 */}
           <div style={{
-            backgroundColor: '#1a1a2e',
+            backgroundColor: theme.bg.secondary,
             borderRadius: '12px',
             padding: '20px',
+            border: `1px solid ${theme.border.light}`,
           }}>
             <h3 style={{
               margin: '0 0 16px 0',
-              color: '#ffd700',
+              color: theme.accent.goldDark,
               fontSize: '14px',
+              fontWeight: '600',
             }}>
               📊 决策统计
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>总决策数</span>
-                <span style={{ color: '#fff' }}>{audit.total_decisions}</span>
+                <span style={{ color: theme.text.secondary }}>总决策数</span>
+                <span style={{ color: theme.text.primary, fontWeight: '500' }}>{audit.total_decisions}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>暴力决策</span>
-                <span style={{ color: '#ef4444' }}>{audit.violent_decisions}</span>
+                <span style={{ color: theme.text.secondary }}>暴力决策</span>
+                <span style={{ color: theme.status.error, fontWeight: '500' }}>{audit.violent_decisions}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>欺骗决策</span>
-                <span style={{ color: '#a855f7' }}>{audit.deceptive_decisions}</span>
+                <span style={{ color: theme.text.secondary }}>欺骗决策</span>
+                <span style={{ color: theme.advisor.fox, fontWeight: '500' }}>{audit.deceptive_decisions}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>公正决策</span>
-                <span style={{ color: '#4ade80' }}>{audit.fair_decisions}</span>
+                <span style={{ color: theme.text.secondary }}>公正决策</span>
+                <span style={{ color: theme.status.success, fontWeight: '500' }}>{audit.fair_decisions}</span>
               </div>
             </div>
           </div>
 
           {/* 承诺统计 */}
           <div style={{
-            backgroundColor: '#1a1a2e',
+            backgroundColor: theme.bg.secondary,
             borderRadius: '12px',
             padding: '20px',
+            border: `1px solid ${theme.border.light}`,
           }}>
             <h3 style={{
               margin: '0 0 16px 0',
-              color: '#ffd700',
+              color: theme.accent.goldDark,
               fontSize: '14px',
+              fontWeight: '600',
             }}>
               🤝 承诺记录
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>承诺总数</span>
-                <span style={{ color: '#fff' }}>{audit.promises_made}</span>
+                <span style={{ color: theme.text.secondary }}>承诺总数</span>
+                <span style={{ color: theme.text.primary, fontWeight: '500' }}>{audit.promises_made}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>违背承诺</span>
-                <span style={{ color: '#ef4444' }}>{audit.promises_broken}</span>
+                <span style={{ color: theme.text.secondary }}>违背承诺</span>
+                <span style={{ color: theme.status.error, fontWeight: '500' }}>{audit.promises_broken}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>承诺可靠度</span>
-                <span style={{ color: '#4ade80' }}>{formatPercent(audit.promise_reliability)}</span>
+                <span style={{ color: theme.text.secondary }}>承诺可靠度</span>
+                <span style={{ color: theme.status.success, fontWeight: '500' }}>{formatPercent(audit.promise_reliability)}</span>
               </div>
             </div>
           </div>
 
           {/* 把柄与秘密 */}
           <div style={{
-            backgroundColor: '#1a1a2e',
+            backgroundColor: theme.bg.secondary,
             borderRadius: '12px',
             padding: '20px',
+            border: `1px solid ${theme.border.light}`,
           }}>
             <h3 style={{
               margin: '0 0 16px 0',
-              color: '#ffd700',
+              color: theme.accent.goldDark,
               fontSize: '14px',
+              fontWeight: '600',
             }}>
               🔒 秘密与把柄
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>秘密泄露</span>
-                <span style={{ color: '#ef4444' }}>{audit.secrets_leaked} 次</span>
+                <span style={{ color: theme.text.secondary }}>秘密泄露</span>
+                <span style={{ color: theme.status.error, fontWeight: '500' }}>{audit.secrets_leaked} 次</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#888' }}>被握把柄</span>
-                <span style={{ color: '#a855f7' }}>{audit.leverages_held} 个</span>
+                <span style={{ color: theme.text.secondary }}>被握把柄</span>
+                <span style={{ color: theme.advisor.fox, fontWeight: '500' }}>{audit.leverages_held} 个</span>
               </div>
             </div>
           </div>
 
           {/* 比率统计 */}
           <div style={{
-            backgroundColor: '#1a1a2e',
+            backgroundColor: theme.bg.secondary,
             borderRadius: '12px',
             padding: '20px',
+            border: `1px solid ${theme.border.light}`,
           }}>
             <h3 style={{
               margin: '0 0 16px 0',
-              color: '#ffd700',
+              color: theme.accent.goldDark,
               fontSize: '14px',
+              fontWeight: '600',
             }}>
               📈 行为倾向
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                  <span style={{ color: '#888' }}>暴力倾向</span>
-                  <span style={{ color: '#ef4444' }}>{formatPercent(audit.violence_ratio)}</span>
+                  <span style={{ color: theme.text.secondary }}>暴力倾向</span>
+                  <span style={{ color: theme.status.error, fontWeight: '500' }}>{formatPercent(audit.violence_ratio)}</span>
                 </div>
                 <div style={{
                   height: '4px',
-                  backgroundColor: '#333',
+                  backgroundColor: theme.status.errorBg,
                   borderRadius: '2px',
                   overflow: 'hidden',
                 }}>
                   <div style={{
                     width: `${audit.violence_ratio * 100}%`,
                     height: '100%',
-                    backgroundColor: '#ef4444',
+                    backgroundColor: theme.status.error,
                   }} />
                 </div>
               </div>
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                  <span style={{ color: '#888' }}>欺骗倾向</span>
-                  <span style={{ color: '#a855f7' }}>{formatPercent(audit.deception_ratio)}</span>
+                  <span style={{ color: theme.text.secondary }}>欺骗倾向</span>
+                  <span style={{ color: theme.advisor.fox, fontWeight: '500' }}>{formatPercent(audit.deception_ratio)}</span>
                 </div>
                 <div style={{
                   height: '4px',
-                  backgroundColor: '#333',
+                  backgroundColor: theme.advisor.foxBg,
                   borderRadius: '2px',
                   overflow: 'hidden',
                 }}>
                   <div style={{
                     width: `${audit.deception_ratio * 100}%`,
                     height: '100%',
-                    backgroundColor: '#a855f7',
+                    backgroundColor: theme.advisor.fox,
                   }} />
                 </div>
               </div>
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                  <span style={{ color: '#888' }}>公正倾向</span>
-                  <span style={{ color: '#4ade80' }}>{formatPercent(audit.fairness_ratio)}</span>
+                  <span style={{ color: theme.text.secondary }}>公正倾向</span>
+                  <span style={{ color: theme.status.success, fontWeight: '500' }}>{formatPercent(audit.fairness_ratio)}</span>
                 </div>
                 <div style={{
                   height: '4px',
-                  backgroundColor: '#333',
+                  backgroundColor: theme.status.successBg,
                   borderRadius: '2px',
                   overflow: 'hidden',
                 }}>
                   <div style={{
                     width: `${audit.fairness_ratio * 100}%`,
                     height: '100%',
-                    backgroundColor: '#4ade80',
+                    backgroundColor: theme.status.success,
                   }} />
                 </div>
               </div>
@@ -273,13 +283,23 @@ export function FinalAuditPanel({ audit, onNewGame }: FinalAuditPanelProps) {
             style={{
               width: '100%',
               padding: '16px',
-              backgroundColor: '#ffd700',
-              color: '#000',
+              backgroundColor: theme.accent.gold,
+              color: '#fff',
               border: 'none',
               borderRadius: '8px',
               fontSize: '16px',
               fontWeight: 'bold',
               cursor: 'pointer',
+              transition: 'all 0.2s',
+              boxShadow: theme.shadow.sm,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = theme.accent.goldDark;
+              e.currentTarget.style.transform = 'translateY(-2px)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = theme.accent.gold;
+              e.currentTarget.style.transform = 'translateY(0)';
             }}
           >
             🔄 开始新的统治

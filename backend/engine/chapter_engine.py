@@ -2,7 +2,9 @@
 关卡引擎
 管理关卡流程、议会辩论和场景生成
 """
-from typing import Optional
+from typing import Optional, List, Dict, Any
+import json
+import re
 from openai import AsyncOpenAI
 from config import settings
 from models import GameState, ChapterLibrary, ChapterID, Chapter
@@ -19,6 +21,8 @@ class ChapterEngine:
             api_key=self.api_key,
             base_url=settings.openrouter_base_url,
         )
+        # 存储当前回合的后果上下文，用于连续处理
+        self.consequence_context: Dict[str, Any] = {}
 
     async def start_chapter(self, game_state: GameState, chapter_id: str) -> dict:
         """开始一个关卡"""
@@ -260,6 +264,14 @@ class ChapterEngine:
         # 检查关卡结束条件
         chapter_result = self._check_chapter_conditions(game_state, chapter)
 
+        # 生成政令后续影响
+        decree_consequences = await self.generate_decree_consequences(
+            game_state=game_state,
+            player_decision=player_input,
+            decision_analysis=analysis,
+            chapter=chapter,
+        )
+
         return {
             "decision_analysis": analysis,
             "impact": impact,
@@ -267,6 +279,7 @@ class ChapterEngine:
             "secrets_leaked": [s.action for s in game_state.check_secret_leaks()],
             "chapter_result": chapter_result,
             "state": game_state.to_summary(include_hidden=not chapter.hide_values),
+            "decree_consequences": decree_consequences,  # 添加政令后续影响
         }
 
     async def _analyze_decision(self, player_input: str, chapter: Chapter) -> dict:
@@ -445,3 +458,235 @@ class ChapterEngine:
                 return "……如你所愿。"
             else:
                 return "臣领命。"
+
+    async def generate_decree_consequences(
+        self,
+        game_state: GameState,
+        player_decision: str,
+        decision_analysis: dict,
+        chapter: Chapter,
+    ) -> List[Dict[str, Any]]:
+        """
+        生成政令后续影响
+        基于《君主论》的权谋智慧分析玩家决策可能带来的连锁反应
+        """
+        import uuid
+
+        # 构建分析上下文
+        context_prompt = f"""你是一位深谙《君主论》的政治分析师。请分析以下政令可能带来的后续影响。
+
+【当前关卡背景】
+关卡：{chapter.name} - {chapter.subtitle}
+困境：{chapter.dilemma}
+场景：{chapter.scene_snapshot}
+
+【君主的决策】
+政令内容："{player_decision}"
+
+【决策特征分析】
+- 是否听从顾问：{decision_analysis.get("followed_advisor", "独立决策")}
+- 是否涉及暴力：{"是" if decision_analysis.get("was_violent") else "否"}
+- 是否涉及欺骗：{"是" if decision_analysis.get("was_deceptive") else "否"}
+- 是否公平公正：{"是" if decision_analysis.get("was_fair") else "否"}
+- 是否包含承诺：{"是" if decision_analysis.get("contains_promise") else "否"}
+- 是否秘密行动：{"是" if decision_analysis.get("is_secret_action") else "否"}
+
+【当前权力状态】
+- 掌控力: {game_state.power.authority:.0f}%
+- 畏惧值: {game_state.power.fear:.0f}%
+- 爱戴值: {game_state.power.love:.0f}%
+- 信用分: {game_state.credit_score:.0f}
+
+【《君主论》核心教诲参考】
+1. "宁可被人畏惧，也不要被人爱戴" - 但过度恐惧会引发反抗
+2. "暴力应当一次性使用" - 但持续使用会积累仇恨
+3. "聪明的君主不应当守信" - 但过度欺骗会丧失信誉
+4. "明智的君主应当建立在人民的支持之上" - 民心不可完全忽视
+5. "必须懂得如何做野兽" - 狮子的勇猛与狐狸的狡诈缺一不可
+
+请根据以上分析，生成2-4个政令可能带来的后续影响。每个影响都应该是合理的因果推演，并具有《君主论》的权谋深度。
+
+返回JSON数组格式：
+[
+  {{
+    "title": "影响标题（简短有力，如'军心动摇'、'民间流言'）",
+    "description": "详细描述这个影响是如何从政令中产生的，50-80字",
+    "severity": "low/medium/high/critical",
+    "type": "political/economic/military/social/diplomatic",
+    "potential_outcomes": ["可能的后果1", "可能的后果2", "可能的后果3"],
+    "requires_action": true/false,
+    "deadline_turns": 2-5（如果需要处理，几回合后会自动恶化）
+  }}
+]
+
+严重程度说明：
+- low: 小波澜，暂时不需要处理
+- medium: 需要关注，可能会发展
+- high: 严重影响，应当尽快处理
+- critical: 危机，必须立即处理
+
+类型说明：
+- political: 涉及权力、派系、官僚
+- economic: 涉及财政、贸易、民生
+- military: 涉及军队、武力、安全
+- social: 涉及民心、舆论、社会稳定
+- diplomatic: 涉及外交、联盟、其他势力
+
+只返回JSON数组，不要其他解释。"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": context_prompt}],
+                temperature=0.7,
+                max_tokens=1200,
+            )
+            content = response.choices[0].message.content.strip()
+
+            # 提取JSON
+            json_match = re.search(r'\[[\s\S]*\]', content)
+            if json_match:
+                consequences_raw = json.loads(json_match.group())
+
+                # 为每个后果生成唯一ID并验证格式
+                consequences = []
+                for c in consequences_raw:
+                    consequence = {
+                        "id": str(uuid.uuid4())[:8],
+                        "title": c.get("title", "未知影响"),
+                        "description": c.get("description", ""),
+                        "severity": c.get("severity", "medium"),
+                        "type": c.get("type", "political"),
+                        "potential_outcomes": c.get("potential_outcomes", []),
+                        "requires_action": c.get("requires_action", False),
+                        "deadline_turns": c.get("deadline_turns", 3) if c.get("requires_action") else None,
+                    }
+                    # 验证severity和type的值
+                    if consequence["severity"] not in ["low", "medium", "high", "critical"]:
+                        consequence["severity"] = "medium"
+                    if consequence["type"] not in ["political", "economic", "military", "social", "diplomatic"]:
+                        consequence["type"] = "political"
+                    consequences.append(consequence)
+
+                # 存储上下文以便后续连续处理
+                session_id = game_state.session_id
+                self.consequence_context[session_id] = {
+                    "original_decision": player_decision,
+                    "consequences": consequences,
+                    "chapter_context": {
+                        "name": chapter.name,
+                        "dilemma": chapter.dilemma,
+                        "background": chapter.background,
+                    },
+                }
+
+                return consequences
+
+        except Exception as e:
+            print(f"生成政令后果失败: {e}")
+
+        # 默认返回一个通用影响
+        return [
+            {
+                "id": str(uuid.uuid4())[:8],
+                "title": "政令反响",
+                "description": "你的政令在朝野引起了一些反响，各方势力正在观望局势发展。",
+                "severity": "low",
+                "type": "political",
+                "potential_outcomes": ["继续观望", "局势可能变化"],
+                "requires_action": False,
+                "deadline_turns": None,
+            }
+        ]
+
+    async def continue_with_consequences(
+        self,
+        game_state: GameState,
+        selected_consequence_id: str,
+        player_response: str,
+    ) -> dict:
+        """
+        处理玩家选择继续处理某个后果
+        生成连贯的后续剧情和顾问回应
+        """
+        session_id = game_state.session_id
+        context = self.consequence_context.get(session_id, {})
+
+        if not context:
+            return {"error": "没有找到后果上下文"}
+
+        # 找到选中的后果
+        selected_consequence = None
+        for c in context.get("consequences", []):
+            if c.get("id") == selected_consequence_id:
+                selected_consequence = c
+                break
+
+        if not selected_consequence:
+            return {"error": "未找到指定的后果"}
+
+        chapter_context = context.get("chapter_context", {})
+        original_decision = context.get("original_decision", "")
+
+        # 生成后续场景
+        scene_prompt = f"""你是《君主论》博弈游戏的叙事者。玩家之前发布了一道政令，现在选择继续处理其中一个后果。
+
+【原政令】
+{original_decision}
+
+【玩家选择处理的后果】
+标题：{selected_consequence.get("title")}
+描述：{selected_consequence.get("description")}
+严重程度：{selected_consequence.get("severity")}
+类型：{selected_consequence.get("type")}
+可能的结果：{", ".join(selected_consequence.get("potential_outcomes", []))}
+
+【玩家的应对】
+{player_response}
+
+【关卡背景】
+{chapter_context.get("name")} - {chapter_context.get("dilemma")}
+
+请生成：
+1. 一段简短的场景描述（50-100字），描述玩家应对后的新局势
+2. 三位顾问对此事的简短评论（每人1-2句）
+
+返回JSON格式：
+{{
+  "scene_update": "新局势描述",
+  "advisor_comments": {{
+    "lion": "狮子的评论",
+    "fox": "狐狸的评论",
+    "balance": "天平的评论"
+  }},
+  "consequence_resolved": true/false,
+  "new_developments": ["如果有新的发展或影响，列在这里"]
+}}"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": scene_prompt}],
+                temperature=0.7,
+                max_tokens=600,
+            )
+            content = response.choices[0].message.content.strip()
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                return result
+
+        except Exception as e:
+            print(f"处理后果失败: {e}")
+
+        return {
+            "scene_update": "你的应对暂时稳定了局势。",
+            "advisor_comments": {
+                "lion": "且看后续发展。",
+                "fox": "还需观察。",
+                "balance": "情况有所缓和。",
+            },
+            "consequence_resolved": True,
+            "new_developments": [],
+        }

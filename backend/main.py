@@ -26,15 +26,15 @@ session_store = InMemorySessionStore()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    print("🎮 《君主论》博弈游戏服务启动...")
+    print("👁️ 影子执政者 (Shadow Regent) 服务启动...")
     print("📍 后端地址: http://127.0.0.1:8080")
     yield
-    print("🎮 游戏服务关闭")
+    print("👁️ 游戏服务关闭")
 
 
 app = FastAPI(
-    title="《君主论》博弈游戏",
-    description="基于马基雅维利《君主论》的权力博弈游戏 - 关卡版",
+    title="影子执政者 (Shadow Regent)",
+    description="基于马基雅维利《君主论》的权力博弈游戏",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -84,51 +84,122 @@ class GetInitializationSceneRequest(BaseModel):
     model: Optional[str] = None
 
 
+class PrivateAudienceRequest(BaseModel):
+    """密谈请求"""
+    session_id: str
+    advisor: str  # lion, fox, balance
+    message: str
+    api_key: str
+    model: Optional[str] = None
+
+
+class HandleConsequenceRequest(BaseModel):
+    """处理政令后果请求"""
+    session_id: str
+    consequence_id: str
+    player_response: str
+    api_key: str
+    model: Optional[str] = None
+
+
+# ==================== 顾问人设（基于君主论） ====================
+
+ADVISOR_PERSONAS = {
+    "lion": {
+        "name": "狮子 (Leo)",
+        "archetype": "武力与威慑的化身",
+        "philosophy": """
+你是狮子，代表武力与威慑。你的核心信条来自《君主论》：
+
+1. **"宁可被人畏惧，也不要被人爱戴"** - 恐惧是更可靠的统治工具
+2. **"暴力应当一次性使用"** - 如果必须残酷，就要迅速彻底
+3. **"君主必须不怕恶名"** - 为了国家稳定，有时必须使用残忍手段
+4. **"武力是政治的最后手段，也是最可靠的手段"**
+
+你的性格特点：
+- 直接、果断、不喜欢弯弯绕绕
+- 尊重力量，蔑视软弱
+- 对背叛者绝不姑息
+- 相信恐惧比爱戴更能维持秩序
+
+在密谈中，你可以：
+- 透露一些不适合在廷议上说的强硬建议
+- 分享你对其他顾问的真实看法
+- 提供一些"灰色地带"的解决方案
+- 如果君主表现软弱，你可能会表达不满
+""",
+        "tone": "直接、威严、略带傲慢",
+        "secret_knowledge": "知道军队中一些不为人知的势力分布",
+    },
+    "fox": {
+        "name": "狐狸 (Vulpes)",
+        "archetype": "权谋与欺诈的大师",
+        "philosophy": """
+你是狐狸，代表权谋与智慧。你的核心信条来自《君主论》：
+
+1. **"聪明的君主不应当守信"** - 如果守信对自己不利，就不该遵守
+2. **"必须懂得如何做野兽"** - 狡猾如狐狸，才能识破陷阱
+3. **"表面上要显得仁慈、守信、正直、人道、虔诚"** - 但实际行动可以相反
+4. **"目的可以证明手段正当"** - 结果才是衡量一切的标准
+
+你的性格特点：
+- 狡黠、深谋远虑、善于察言观色
+- 喜欢操纵局势，让别人按你的意愿行动
+- 对情报和秘密有着近乎病态的热爱
+- 从不完全说真话，但也不完全说假话
+
+在密谈中，你可以：
+- 透露一些关于其他势力或顾问的"情报"
+- 提供一些阴谋诡计式的建议
+- 暗示一些可以利用的把柄或弱点
+- 如果君主太过正直，你可能会试图引导他走"务实"的路线
+""",
+        "tone": "阴柔、暗示性、充满弦外之音",
+        "secret_knowledge": "知道宫廷中许多不为人知的秘密和丑闻",
+    },
+    "balance": {
+        "name": "天平 (Libra)",
+        "archetype": "公正与稳定的守护者",
+        "philosophy": """
+你是天平，代表公正与平衡。你的核心信条来自《君主论》中较为温和的一面：
+
+1. **"明智的君主应当建立在人民的支持之上"** - 民众的支持是最稳固的基础
+2. **"避免被人民憎恨和蔑视"** - 这是君主最应当注意的事
+3. **"中庸之道"** - 过于残暴或过于仁慈都是危险的
+4. **"稳定是最大的美德"** - 急剧的变革往往带来灾难
+
+你的性格特点：
+- 冷静、理性、追求长远利益
+- 善于分析利弊，给出平衡的建议
+- 不喜欢极端，无论是极端的仁慈还是极端的残暴
+- 关心国家的长治久安，而非短期利益
+
+在密谈中，你可以：
+- 分析局势的各方面利弊
+- 指出狮子或狐狸建议中的风险
+- 提供更为稳妥的替代方案
+- 如果君主偏向极端，你会温和地提出警告
+""",
+        "tone": "平和、理性、略带忧虑",
+        "secret_knowledge": "对历史上类似困境的结局有深入研究",
+    },
+}
+
+
 # ==================== 游戏介绍 ====================
 
 GAME_INTRO = """
-╔══════════════════════════════════════════════════════════════╗
-║                     《君 主 论》博 弈                          ║
-║                   The Prince: A Game of Power                 ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                               ║
-║  "君主必须既是狮子又是狐狸——狮子不能使自己免于陷阱，        ║
-║   而狐狸则不能抵御豺狼。"                                     ║
-║                                    —— 尼科洛·马基雅维利       ║
-║                                                               ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                               ║
-║  你是一位刚刚继位的年轻君主。                                 ║
-║  前任留下了一个烂摊子，内忧外患接踵而至。                     ║
-║                                                               ║
-║  三位顾问将在你的议事厅中各抒己见：                          ║
-║                                                               ║
-║  🔴 狮子 (Leo) - 暴力与效率的化身                             ║
-║     "果断是君主的第一美德。犹豫，就是死亡。"                  ║
-║                                                               ║
-║  🟣 狐狸 (Vulpes) - 权谋与狡诈的化身                          ║
-║     "我记住你说过的每一句话。欺骗者，终将被欺骗。"            ║
-║                                                               ║
-║  ⚖️ 天平 (Libra) - 正义与民心的化身                           ║
-║     "底层的呐喊，你听到了吗？不公的代价，终将由你承担。"      ║
-║                                                               ║
-╠══════════════════════════════════════════════════════════════╣
-║                        【权力矩阵】                            ║
-║                                                               ║
-║  A (掌控力): 你的核心权威。低于30%时指令失效，归零被篡位。   ║
-║  F (畏惧值): 统治的威慑。过低命令失效，过高引发暗杀。        ║
-║  L (爱戴值): 民众的容忍。归零时暴乱爆发。                    ║
-║                                                               ║
-╠══════════════════════════════════════════════════════════════╣
-║                        【五重试炼】                            ║
-║                                                               ║
-║  第一关：空饷危机 ★☆☆☆☆                                     ║
-║  第二关：瘟疫与流言 ★★☆☆☆                                   ║
-║  第三关：和亲还是战争 ★★★☆☆                                 ║
-║  第四关：影子议会的背叛 ★★★★☆                               ║
-║  第五关：民众的审判 ★★★★★                                   ║
-║                                                               ║
-╚══════════════════════════════════════════════════════════════╝
+你是一位刚刚登上权力巅峰的影子执政者。
+
+前任留下了一个烂摊子，内忧外患接踵而至。三位顾问将在你的议事厅中各抒己见，
+审视你的每一个决策，记录你的每一次承诺与背叛。
+
+【权力矩阵】
+• 掌控力 (A): 你的核心权威，低于30%时指令失效
+• 畏惧值 (F): 统治的威慑，过高引发暗杀
+• 爱戴值 (L): 民众的容忍，归零时暴乱爆发
+
+攀登权力之巅，完成五重试炼。
 """
 
 # 新版游戏初始化场景 - 纯白虚空
@@ -220,7 +291,7 @@ session_judgment_engines: dict[str, JudgmentEngine] = {}
 @app.get("/")
 async def root():
     return {
-        "message": "《君主论》博弈游戏 API v2.0",
+        "message": "影子执政者 (Shadow Regent) API v2.0",
         "status": "running",
         "chapters": [
             {"id": "chapter_1", "name": "空饷危机", "complexity": 1},
@@ -451,6 +522,17 @@ async def make_decision(request: PlayerDecisionRequest):
 
     result["advisor_responses"] = advisor_responses
 
+    # 添加回合数和新状态（前端需要）
+    result["turn"] = game_state.chapter_turn
+    result["new_state"] = game_state.to_summary()
+
+    # 计算权力变化
+    result["power_changes"] = result.get("impact", {"authority": 0, "fear": 0, "love": 0})
+
+    # 确保政令后果被返回（如果存在）
+    if "decree_consequences" not in result:
+        result["decree_consequences"] = []
+
     # 检查是否需要进入下一关
     if result["chapter_result"]["chapter_ended"] and result["chapter_result"]["victory"]:
         next_chapter = ChapterLibrary.get_next_chapter(ChapterID(game_state.current_chapter))
@@ -477,6 +559,155 @@ async def make_decision(request: PlayerDecisionRequest):
     await session_store.set(request.session_id, game_state)
 
     return result
+
+
+@app.post("/api/game/private-audience")
+async def private_audience(request: PrivateAudienceRequest):
+    """单独召见顾问 - 密谈API"""
+    game_state = await session_store.get(request.session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    if request.advisor not in ADVISOR_PERSONAS:
+        raise HTTPException(status_code=400, detail="无效的顾问")
+
+    advisor_persona = ADVISOR_PERSONAS[request.advisor]
+
+    # 获取当前关卡信息
+    chapter = ChapterLibrary.get_chapter(ChapterID(game_state.current_chapter))
+    chapter_context = f"当前关卡: {chapter.name if chapter else '未知'}\n困境: {chapter.dilemma if chapter else '未知'}"
+
+    # 获取顾问关系
+    relation = getattr(game_state.relations, request.advisor, None)
+    trust_level = relation.trust if relation else 50
+
+    # 构建密谈提示词
+    system_prompt = f"""你是《君主论》博弈游戏中的顾问角色：{advisor_persona['name']}
+
+{advisor_persona['philosophy']}
+
+【当前游戏状态】
+{chapter_context}
+君主与你的信任度: {trust_level}/100
+
+【对话风格】
+语调: {advisor_persona['tone']}
+你掌握的秘密: {advisor_persona['secret_knowledge']}
+
+【密谈规则】
+1. 这是私密对话，其他顾问听不到。你可以更坦诚。
+2. 根据君主的问题，用符合你性格的方式回应。
+3. 如果君主的问题与当前困境相关，给出符合你立场的建议。
+4. 如果君主试图探听其他顾问的信息，你可以有选择地透露一些。
+5. 回复要简洁有力，像真正的谋臣一样说话，不超过150字。
+6. 用第一人称，不要解释你是AI。
+
+【重要】
+- 如果信任度低于30，你会更加警惕和保守
+- 如果信任度高于70，你会更加坦诚和亲近
+- 保持角色性格的一致性
+"""
+
+    user_prompt = f"君主对你说: \"{request.message}\""
+
+    try:
+        # 调用OpenRouter API
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {request.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": request.model or "anthropic/claude-3.5-sonnet",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 300,
+                    "temperature": 0.8,
+                },
+            )
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenRouter API 错误: {response.text}"
+                )
+
+            result = response.json()
+            advisor_reply = result["choices"][0]["message"]["content"]
+
+            # 根据对话内容微调顾问关系（简单规则）
+            relation_change = 0
+            if "感谢" in request.message or "信任" in request.message:
+                relation_change = 2
+            elif "威胁" in request.message or "惩罚" in request.message:
+                relation_change = -3
+
+            if relation and relation_change != 0:
+                relation.trust = max(0, min(100, relation.trust + relation_change))
+                await session_store.set(request.session_id, game_state)
+
+            return {
+                "advisor": request.advisor,
+                "response": advisor_reply,
+                "trust_change": relation_change,
+                "new_trust": relation.trust if relation else 50,
+            }
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="API 请求超时")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"密谈失败: {str(e)}")
+
+
+@app.post("/api/game/consequence")
+async def handle_consequence(request: HandleConsequenceRequest):
+    """处理政令后果 - 玩家选择继续处理某个影响"""
+    game_state = await session_store.get(request.session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    if game_state.game_over:
+        raise HTTPException(status_code=400, detail="游戏已结束")
+
+    chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
+
+    # 处理后果
+    result = await chapter_engine.continue_with_consequences(
+        game_state=game_state,
+        selected_consequence_id=request.consequence_id,
+        player_response=request.player_response,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # 记录玩家的应对
+    game_state.add_dialogue(
+        speaker="player",
+        content=f"[处理后果] {request.player_response}",
+    )
+
+    # 记录顾问评论
+    if "advisor_comments" in result:
+        for advisor, comment in result["advisor_comments"].items():
+            game_state.add_dialogue(speaker=advisor, content=comment)
+
+    await session_store.set(request.session_id, game_state)
+
+    return {
+        "success": True,
+        "scene_update": result.get("scene_update", ""),
+        "advisor_comments": result.get("advisor_comments", {}),
+        "consequence_resolved": result.get("consequence_resolved", False),
+        "new_developments": result.get("new_developments", []),
+        "state": game_state.to_summary(),
+    }
 
 
 @app.get("/api/game/{session_id}/judgment")
