@@ -79,9 +79,8 @@ function getStoredJson<T>(key: string, defaultValue: T): T {
 }
 
 export function useGameState(): UseGameStateReturn {
-  // 配置 - 默认 API Key
-  const DEFAULT_API_KEY = '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';
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('openrouter_api_key') || DEFAULT_API_KEY);
+  // 配置 - 用户需要提供有效的 OpenRouter API Key
+  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('openrouter_api_key') || '');
   const [model, setModel] = useState<string>(() => localStorage.getItem('openrouter_model') || '');
 
   // 游戏状态 - 从 localStorage 恢复
