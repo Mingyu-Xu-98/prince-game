@@ -451,25 +451,33 @@ export function useGameState(): UseGameStateReturn {
         // 如果有下一关，先解锁它（但不自动跳转，等用户点击进入下一关按钮）
         if (result.next_chapter_available) {
           setAvailableChapters(prev => {
-            // 检查是否已经有这个关卡
-            const existingIndex = prev.findIndex(c => c.id === result.next_chapter_available!.id);
-            if (existingIndex >= 0) {
-              // 已存在，更新当前关卡为完成状态
-              return prev.map(c =>
-                c.id === currentChapter?.id ? { ...c, status: 'completed' as const } : c
-              );
-            }
-            // 不存在，添加新关卡
-            return [
-              ...prev.map(c => c.id === currentChapter?.id ? { ...c, status: 'completed' as const } : c),
-              {
-                id: result.next_chapter_available!.id,
+            const nextChapterId = result.next_chapter_available!.id;
+            const currentChapterId = currentChapter?.id;
+
+            // 更新现有关卡状态
+            const updated = prev.map(c => {
+              if (c.id === currentChapterId) {
+                return { ...c, status: 'completed' as const };
+              }
+              if (c.id === nextChapterId) {
+                return { ...c, status: 'available' as const };
+              }
+              return c;
+            });
+
+            // 如果下一关不在列表中，添加它
+            const hasNextChapter = updated.some(c => c.id === nextChapterId);
+            if (!hasNextChapter) {
+              updated.push({
+                id: nextChapterId,
                 name: result.next_chapter_available!.name,
                 subtitle: '',
                 complexity: 0,
                 status: 'available' as const
-              }
-            ];
+              });
+            }
+
+            return updated;
           });
           // 不再自动跳转，让用户通过 GameBoard 的按钮来进入下一关
         }
@@ -612,10 +620,32 @@ export function useGameState(): UseGameStateReturn {
         setDialogueHistory([openingDialogue]);
       }
 
-      // 更新可用章节列表中的解锁状态
-      setAvailableChapters(prev => prev.map(ch =>
-        ch.id === nextChapterId ? { ...ch, unlocked: true } : ch
-      ));
+      // 更新可用章节列表：当前关卡标记为完成，新关卡标记为可用
+      setAvailableChapters(prev => {
+        const updated = prev.map(ch => {
+          if (ch.id === currentChapterId) {
+            return { ...ch, status: 'completed' as const };
+          }
+          if (ch.id === nextChapterId) {
+            return { ...ch, status: 'available' as const };
+          }
+          return ch;
+        });
+
+        // 如果新关卡不在列表中，添加它
+        const hasNextChapter = updated.some(ch => ch.id === nextChapterId);
+        if (!hasNextChapter) {
+          updated.push({
+            id: nextChapterId,
+            name: result.chapter.name,
+            subtitle: '',
+            complexity: currentIndex + 2,
+            status: 'available' as const
+          });
+        }
+
+        return updated;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : '开始下一关失败');
       // 出错时回到章节选择

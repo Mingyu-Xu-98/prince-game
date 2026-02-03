@@ -26,6 +26,17 @@ interface GameBoardProps {
 // 游戏模式
 type GameMode = 'council' | 'private_audience' | 'decree_result';
 
+// 发布政令时的场景话语（移到组件外部避免重新创建）
+const DECREE_SCENE_MESSAGES = [
+  { icon: '📜', text: '政令正在拟定...', sub: '书吏们奋笔疾书' },
+  { icon: '🏛️', text: '政令已送往各部...', sub: '大臣们正在传阅' },
+  { icon: '⚔️', text: '门外士兵列队等候...', sub: '准备传令四方' },
+  { icon: '🐎', text: '快马已备好...', sub: '信使整装待发' },
+  { icon: '👥', text: '各方势力正在观望...', sub: '权衡利弊得失' },
+  { icon: '🎭', text: '朝野上下议论纷纷...', sub: '风向悄然变化' },
+  { icon: '⏳', text: '等待各方回应...', sub: '命运的车轮开始转动' },
+];
+
 export function GameBoard({
   gameState,
   currentChapter,
@@ -81,6 +92,22 @@ export function GameBoard({
 
   // 正在加载下一关
   const [loadingNextChapter, setLoadingNextChapter] = useState(false);
+
+  // 发布政令加载状态和场景话语索引
+  const [decreeLoading, setDecreeLoading] = useState(false);
+  const [decreeSceneIndex, setDecreeSceneIndex] = useState(0);
+
+  // 政令加载时循环显示场景话语
+  useEffect(() => {
+    if (decreeLoading) {
+      const interval = setInterval(() => {
+        setDecreeSceneIndex(prev => (prev + 1) % DECREE_SCENE_MESSAGES.length);
+      }, 2000); // 每2秒切换一次
+      return () => clearInterval(interval);
+    } else {
+      setDecreeSceneIndex(0);
+    }
+  }, [decreeLoading]);
 
   const handleCouncilDiscuss = async () => {
     if (!input.trim() || councilLoading || !sessionId || !apiKey) return;
@@ -177,17 +204,24 @@ export function GameBoard({
 
   // 发布政令
   const handleDecree = async () => {
-    if (!decreeInput.trim() || isLoading) return;
+    if (!decreeInput.trim() || isLoading || decreeLoading) return;
 
     // 保存政令内容用于后续继续回合
     const currentDecree = decreeInput.trim();
     setLastDecreeContent(currentDecree);
 
-    const result = await onSubmitDecision(currentDecree);
-    if (result) {
-      // 后端会返回 decree_consequences，由 AI 基于《君主论》原则分析生成
-      setLastResult(result);
-      setGameMode('decree_result');
+    // 开始加载状态，显示场景话语
+    setDecreeLoading(true);
+
+    try {
+      const result = await onSubmitDecision(currentDecree);
+      if (result) {
+        // 后端会返回 decree_consequences，由 AI 基于《君主论》原则分析生成
+        setLastResult(result);
+        setGameMode('decree_result');
+      }
+    } finally {
+      setDecreeLoading(false);
     }
     setDecreeInput('');
     setShowDecreeModal(false);
@@ -1903,7 +1937,113 @@ export function GameBoard({
             border: `2px solid ${theme.accent.gold}`,
             padding: '32px',
             boxShadow: theme.shadow.lg,
+            position: 'relative',
+            overflow: 'hidden',
           }}>
+            {/* 政令发布中的加载遮罩 */}
+            {decreeLoading && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                backgroundColor: 'rgba(255, 253, 245, 0.98)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 10,
+                borderRadius: '14px',
+              }}>
+                {/* 场景图标 - 带动画 */}
+                <div style={{
+                  fontSize: '56px',
+                  marginBottom: '20px',
+                  animation: 'pulse 1.5s ease-in-out infinite',
+                }}>
+                  {DECREE_SCENE_MESSAGES[decreeSceneIndex].icon}
+                </div>
+
+                {/* 主文字 */}
+                <div
+                  key={`decree-text-${decreeSceneIndex}`}
+                  style={{
+                    color: theme.accent.goldDark,
+                    fontSize: '20px',
+                    fontWeight: 'bold',
+                    marginBottom: '8px',
+                    textAlign: 'center',
+                    animation: 'fadeIn 0.5s ease-out',
+                  }}
+                >
+                  {DECREE_SCENE_MESSAGES[decreeSceneIndex].text}
+                </div>
+
+                {/* 副文字 */}
+                <div style={{
+                  color: theme.text.muted,
+                  fontSize: '14px',
+                  marginBottom: '24px',
+                  textAlign: 'center',
+                  animation: 'fadeIn 0.5s ease-out 0.1s',
+                }}>
+                  {DECREE_SCENE_MESSAGES[decreeSceneIndex].sub}
+                </div>
+
+                {/* 进度指示器 */}
+                <div style={{
+                  display: 'flex',
+                  gap: '8px',
+                  marginBottom: '20px',
+                }}>
+                  {DECREE_SCENE_MESSAGES.map((_, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: idx === decreeSceneIndex ? theme.accent.gold : theme.border.light,
+                        transition: 'all 0.3s ease',
+                        transform: idx === decreeSceneIndex ? 'scale(1.2)' : 'scale(1)',
+                      }}
+                    />
+                  ))}
+                </div>
+
+                {/* 加载条 */}
+                <div style={{
+                  width: '200px',
+                  height: '4px',
+                  backgroundColor: theme.border.light,
+                  borderRadius: '2px',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    width: '100%',
+                    height: '100%',
+                    backgroundColor: theme.accent.gold,
+                    borderRadius: '2px',
+                    animation: 'loadingBar 2s ease-in-out infinite',
+                  }} />
+                </div>
+
+                <style>{`
+                  @keyframes pulse {
+                    0%, 100% { transform: scale(1); }
+                    50% { transform: scale(1.1); }
+                  }
+                  @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                  }
+                  @keyframes loadingBar {
+                    0% { transform: translateX(-100%); }
+                    50% { transform: translateX(0); }
+                    100% { transform: translateX(100%); }
+                  }
+                `}</style>
+              </div>
+            )}
+
             <h2 style={{
               color: theme.accent.goldDark,
               fontSize: '24px',
@@ -1923,6 +2063,7 @@ export function GameBoard({
               onChange={(e) => setDecreeInput(e.target.value)}
               placeholder="输入你的政令..."
               autoFocus
+              disabled={decreeLoading}
               style={{
                 width: '100%',
                 height: '150px',
@@ -1941,6 +2082,7 @@ export function GameBoard({
             <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
               <button
                 onClick={() => setShowDecreeModal(false)}
+                disabled={decreeLoading}
                 style={{
                   flex: 1,
                   padding: '14px',
@@ -1949,29 +2091,30 @@ export function GameBoard({
                   border: `1px solid ${theme.border.medium}`,
                   borderRadius: '8px',
                   fontSize: '14px',
-                  cursor: 'pointer',
+                  cursor: decreeLoading ? 'not-allowed' : 'pointer',
+                  opacity: decreeLoading ? 0.5 : 1,
                 }}
               >
                 取消
               </button>
               <button
                 onClick={handleDecree}
-                disabled={!decreeInput.trim() || isLoading}
+                disabled={!decreeInput.trim() || isLoading || decreeLoading}
                 style={{
                   flex: 1,
                   padding: '14px',
-                  background: !decreeInput.trim() || isLoading
+                  background: !decreeInput.trim() || isLoading || decreeLoading
                     ? theme.border.medium
                     : `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
-                  color: !decreeInput.trim() || isLoading ? theme.text.muted : '#FFFFFF',
+                  color: !decreeInput.trim() || isLoading || decreeLoading ? theme.text.muted : '#FFFFFF',
                   border: 'none',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: 'bold',
-                  cursor: !decreeInput.trim() || isLoading ? 'not-allowed' : 'pointer',
+                  cursor: !decreeInput.trim() || isLoading || decreeLoading ? 'not-allowed' : 'pointer',
                 }}
               >
-                {isLoading ? '发布中...' : '确认发布'}
+                {isLoading || decreeLoading ? '发布中...' : '确认发布'}
               </button>
             </div>
           </div>
