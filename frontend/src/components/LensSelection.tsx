@@ -99,9 +99,6 @@ export function LensSelection({ lensChoices, onSelect, isLoading }: LensSelectio
                   <div className="card-icon">{display.icon}</div>
                   <h3 className="card-title">{display.name}</h3>
                   <p className="card-motto">{display.motto}</p>
-                  <div className="card-mystery">
-                    <span className="mystery-text">???</span>
-                  </div>
                   <div className="card-select-hint">点击选择</div>
                 </div>
               );
@@ -333,21 +330,6 @@ export function LensSelection({ lensChoices, onSelect, isLoading }: LensSelectio
           font-style: italic;
           position: relative;
           z-index: 1;
-        }
-
-        .card-mystery {
-          background: ${theme.bg.secondary};
-          border-radius: 8px;
-          padding: 16px;
-          margin-bottom: 8px;
-          position: relative;
-          z-index: 1;
-        }
-
-        .mystery-text {
-          font-size: 18px;
-          color: ${theme.text.muted};
-          letter-spacing: 4px;
         }
 
         .card-select-hint {
