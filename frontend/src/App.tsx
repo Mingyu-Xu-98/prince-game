@@ -160,6 +160,8 @@ function App() {
     setModel,
     // 累积的未处理影响
     pendingConsequences,
+    // 状态更新器
+    setGameState,
     // 操作
     startNewGame,
     selectObservationLens,
@@ -412,11 +414,15 @@ function App() {
             currentChapter={currentChapter}
             dialogueHistory={dialogueHistory}
             isLoading={isLoading}
+            sessionId={sessionId}
+            apiKey={apiKey}
+            model={model}
             onSubmitDecision={submitDecision}
             onPrivateAudience={privateAudience}
             onNextChapter={goToNextChapter}
             onSkipConsequences={skipConsequences}
             onContinueWithConsequences={continueWithConsequences}
+            onUpdateGameState={setGameState}
           />
         </>
       )}

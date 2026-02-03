@@ -317,4 +317,129 @@ export const gameApi = {
 
     return response.json();
   },
+
+  /**
+   * 继续当前回合 - 生成新场景和顾问评论
+   */
+  async continueRound(
+    sessionId: string,
+    previousDecision: string,
+    consequences: any[],
+    apiKey: string,
+    model?: string
+  ): Promise<{
+    success: boolean;
+    scene_update: string;
+    new_dilemma: string;
+    advisor_comments: {
+      lion?: { stance: string; comment: string; suggestion?: string };
+      fox?: { stance: string; comment: string; suggestion?: string };
+      balance?: { stance: string; comment: string; suggestion?: string };
+    };
+    state: GameState;
+  }> {
+    const response = await fetch(`${API_BASE}/game/continue-round`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        previous_decision: previousDecision,
+        consequences,
+        api_key: apiKey,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '继续回合失败');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * 廷议对话 - 分析玩家意图并生成顾问回应
+   */
+  async councilChat(
+    sessionId: string,
+    message: string,
+    conversationHistory: any[],
+    apiKey: string,
+    model?: string
+  ): Promise<{
+    success: boolean;
+    intent: {
+      intent: string;
+      target: string;
+      tone: string;
+      summary: string;
+      triggers_conflict: boolean;
+    };
+    responses: {
+      lion?: string;
+      fox?: string;
+      balance?: string;
+    };
+    conflict_triggered: boolean;
+    conflict_description: string;
+    trust_changes: { lion: number; fox: number; balance: number };
+    atmosphere: string;
+    state: GameState;
+  }> {
+    const response = await fetch(`${API_BASE}/game/council-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message,
+        conversation_history: conversationHistory,
+        api_key: apiKey,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '廷议对话失败');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * 提前结束关卡
+   */
+  async endChapterEarly(
+    sessionId: string,
+    pendingConsequences: any[],
+    apiKey: string,
+    model?: string
+  ): Promise<{
+    success: boolean;
+    chapter_ended: boolean;
+    victory: boolean;
+    reason: string;
+    pending_consequences_count: number;
+    next_chapter_available: { id: string; name: string } | null;
+    state: GameState;
+  }> {
+    const response = await fetch(`${API_BASE}/game/end-chapter`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        pending_consequences: pendingConsequences,
+        api_key: apiKey,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || '结束关卡失败');
+    }
+
+    return response.json();
+  },
 };

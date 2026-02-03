@@ -17,6 +17,15 @@ class ChapterEngine:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or settings.openrouter_api_key
         self.model = model or settings.default_model
+
+        # 验证 API key
+        if not self.api_key:
+            print("[ChapterEngine] 警告: API Key 未设置!")
+        else:
+            print(f"[ChapterEngine] 初始化, API Key 前8位: {self.api_key[:8]}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+            print(f"[ChapterEngine] API Base URL: {settings.openrouter_base_url}")
+
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url=settings.openrouter_base_url,
@@ -78,14 +87,24 @@ class ChapterEngine:
 风格要求：古典文言白话混合，有历史感，突出困境的紧迫性。"""
 
         try:
+            print(f"[ChapterEngine] 生成关卡开场白...")
+            print(f"[ChapterEngine] 关卡: {chapter.name}")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+            print(f"[ChapterEngine] API Key 前8位: {self.api_key[:8] if self.api_key else 'None'}...")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.8,
                 max_tokens=400,
             )
-            return response.choices[0].message.content.strip()
-        except Exception:
+            result = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 开场白生成成功: {result[:50]}...")
+            return result
+        except Exception as e:
+            print(f"[ChapterEngine] 生成开场白失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return chapter.background
 
     async def generate_council_debate(self, chapter: Chapter, game_state: GameState) -> dict:
@@ -176,6 +195,9 @@ class ChapterEngine:
 5. 只返回JSON数组"""
 
         try:
+            print(f"[ChapterEngine] 生成议会辩论对话...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
@@ -183,16 +205,23 @@ class ChapterEngine:
                 max_tokens=800,
             )
             content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 辩论对话响应: {content[:100]}...")
+
             # 提取JSON
-            import json
-            import re
             json_match = re.search(r'\[[\s\S]*\]', content)
             if json_match:
-                return json.loads(json_match.group())
-        except Exception:
-            pass
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 辩论对话生成成功，共 {len(result)} 条")
+                return result
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON数组")
+        except Exception as e:
+            print(f"[ChapterEngine] 生成辩论对话失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
         # 默认对话
+        print("[ChapterEngine] 使用默认辩论对话")
         return [
             {"speaker": "lion", "content": chapter.lion_suggestion.suggestion},
             {"speaker": "fox", "content": chapter.fox_suggestion.suggestion},
@@ -314,6 +343,9 @@ class ChapterEngine:
 数值范围：-20到+20"""
 
         try:
+            print(f"[ChapterEngine] 分析玩家决策: {player_input[:50]}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
@@ -321,15 +353,20 @@ class ChapterEngine:
                 max_tokens=500,
             )
             content = response.choices[0].message.content.strip()
-            import json
-            import re
+            print(f"[ChapterEngine] 决策分析响应: {content[:100]}...")
+
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
-                return json.loads(json_match.group())
-        except Exception:
-            pass
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 决策分析成功，影响: {result.get('impact', {})}")
+                return result
+        except Exception as e:
+            print(f"[ChapterEngine] 分析决策失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
         # 默认分析
+        print("[ChapterEngine] 使用默认决策分析结果")
         return {
             "followed_advisor": "none",
             "was_violent": False,
@@ -444,14 +481,23 @@ class ChapterEngine:
 4. {"如果你有把柄，可以隐晦提及" if has_leverage else ""}"""
 
         try:
+            print(f"[ChapterEngine] 生成 {advisor} 顾问回应...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+            print(f"[ChapterEngine] API Key 前8位: {self.api_key[:8] if self.api_key else 'None'}...")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.8,
                 max_tokens=200,
             )
-            return response.choices[0].message.content.strip()
-        except Exception:
+            result = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] {advisor} 回应生成成功: {result[:50]}...")
+            return result
+        except Exception as e:
+            print(f"[ChapterEngine] 生成 {advisor} 回应失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             if followed:
                 return "明智的选择。"
             elif rejected:
@@ -471,6 +517,11 @@ class ChapterEngine:
         基于《君主论》的权谋智慧分析玩家决策可能带来的连锁反应
         """
         import uuid
+
+        # 获取顾问关系信息
+        lion_relation = game_state.relations.get("lion")
+        fox_relation = game_state.relations.get("fox")
+        balance_relation = game_state.relations.get("balance")
 
         # 构建分析上下文
         context_prompt = f"""你是一位深谙《君主论》的政治分析师。请分析以下政令可能带来的后续影响。
@@ -497,6 +548,11 @@ class ChapterEngine:
 - 爱戴值: {game_state.power.love:.0f}%
 - 信用分: {game_state.credit_score:.0f}
 
+【顾问关系状态】
+- 狮子(武力派): 信任度 {lion_relation.trust if lion_relation else 50}，忠诚度 {lion_relation.loyalty if lion_relation else 50}
+- 狐狸(权谋派): 信任度 {fox_relation.trust if fox_relation else 50}，忠诚度 {fox_relation.loyalty if fox_relation else 50}
+- 天平(民心派): 信任度 {balance_relation.trust if balance_relation else 50}，忠诚度 {balance_relation.loyalty if balance_relation else 50}
+
 【《君主论》核心教诲参考】
 1. "宁可被人畏惧，也不要被人爱戴" - 但过度恐惧会引发反抗
 2. "暴力应当一次性使用" - 但持续使用会积累仇恨
@@ -504,7 +560,11 @@ class ChapterEngine:
 4. "明智的君主应当建立在人民的支持之上" - 民心不可完全忽视
 5. "必须懂得如何做野兽" - 狮子的勇猛与狐狸的狡诈缺一不可
 
-请根据以上分析，生成2-4个政令可能带来的后续影响。每个影响都应该是合理的因果推演，并具有《君主论》的权谋深度。
+请根据以上分析，生成2-4个政令可能带来的后续影响。影响分为两类：
+1. **即时影响**：需要在当前回合处理，否则会直接影响统治结局（设置 requires_immediate=true）
+2. **延迟影响**：会在后续关卡中体现，如果不处理会逐渐恶化（设置 affects_future=true）
+
+每个影响都应该是合理的因果推演，并具有《君主论》的权谋深度。
 
 返回JSON数组格式：
 [
@@ -515,7 +575,10 @@ class ChapterEngine:
     "type": "political/economic/military/social/diplomatic",
     "potential_outcomes": ["可能的后果1", "可能的后果2", "可能的后果3"],
     "requires_action": true/false,
-    "deadline_turns": 2-5（如果需要处理，几回合后会自动恶化）
+    "requires_immediate": true/false,
+    "affects_future": true/false,
+    "deadline_turns": 2-5,
+    "power_impact": {{"authority": -5到5, "fear": -5到5, "love": -5到5}}
   }}
 ]
 
@@ -535,6 +598,10 @@ class ChapterEngine:
 只返回JSON数组，不要其他解释。"""
 
         try:
+            print(f"[ChapterEngine] 生成政令后续影响...")
+            print(f"[ChapterEngine] 政令内容: {player_decision[:50]}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": context_prompt}],
@@ -542,11 +609,13 @@ class ChapterEngine:
                 max_tokens=1200,
             )
             content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 政令后果响应: {content[:100]}...")
 
             # 提取JSON
             json_match = re.search(r'\[[\s\S]*\]', content)
             if json_match:
                 consequences_raw = json.loads(json_match.group())
+                print(f"[ChapterEngine] 解析到 {len(consequences_raw)} 个后果")
 
                 # 为每个后果生成唯一ID并验证格式
                 consequences = []
@@ -580,10 +649,15 @@ class ChapterEngine:
                     },
                 }
 
+                print(f"[ChapterEngine] 政令后果生成成功")
                 return consequences
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON数组")
 
         except Exception as e:
-            print(f"生成政令后果失败: {e}")
+            print(f"[ChapterEngine] 生成政令后果失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
         # 默认返回一个通用影响
         return [
@@ -664,6 +738,10 @@ class ChapterEngine:
 }}"""
 
         try:
+            print(f"[ChapterEngine] 处理后果: {selected_consequence.get('title', 'unknown')}...")
+            print(f"[ChapterEngine] 玩家应对: {player_response[:50]}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": scene_prompt}],
@@ -671,15 +749,22 @@ class ChapterEngine:
                 max_tokens=600,
             )
             content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 后果处理响应: {content[:100]}...")
 
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
                 result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 后果处理成功")
                 return result
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON")
 
         except Exception as e:
-            print(f"处理后果失败: {e}")
+            print(f"[ChapterEngine] 处理后果失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
+        print("[ChapterEngine] 使用默认后果处理结果")
         return {
             "scene_update": "你的应对暂时稳定了局势。",
             "advisor_comments": {
@@ -689,4 +774,338 @@ class ChapterEngine:
             },
             "consequence_resolved": True,
             "new_developments": [],
+        }
+
+    async def generate_next_round_scene(
+        self,
+        game_state: GameState,
+        previous_decision: str,
+        consequences: List[Dict[str, Any]],
+        chapter: Chapter,
+    ) -> dict:
+        """
+        生成继续当前回合时的新场景
+        包括场景变化描述和顾问针对上轮政令及影响的新观点
+        """
+        # 获取顾问关系
+        lion_relation = game_state.relations.get("lion")
+        fox_relation = game_state.relations.get("fox")
+        balance_relation = game_state.relations.get("balance")
+
+        consequences_desc = "\n".join([
+            f"- {c.get('title')}（{c.get('severity')}）: {c.get('description')}"
+            for c in consequences
+        ]) if consequences else "暂无明显影响"
+
+        prompt = f"""你是《君主论》博弈游戏的叙事者和三位顾问。
+
+【背景】
+关卡：{chapter.name}
+困境：{chapter.dilemma}
+当前回合：{game_state.chapter_turn}
+
+【上一轮政令】
+{previous_decision}
+
+【政令产生的影响】
+{consequences_desc}
+
+【当前权力状态】
+- 掌控力: {game_state.power.authority:.0f}%
+- 畏惧值: {game_state.power.fear:.0f}%
+- 爱戴值: {game_state.power.love:.0f}%
+
+【顾问状态】
+- 狮子: 信任度 {lion_relation.trust if lion_relation else 50}（{"敌对" if lion_relation and lion_relation.is_hostile else "正常"}）
+- 狐狸: 信任度 {fox_relation.trust if fox_relation else 50}（{"敌对" if fox_relation and fox_relation.is_hostile else "正常"}）
+- 天平: 信任度 {balance_relation.trust if balance_relation else 50}（{"敌对" if balance_relation and balance_relation.is_hostile else "正常"}）
+
+请生成：
+1. 场景变化描述（50-80字）：描述政令执行后局势的变化
+2. 三位顾问针对上轮政令和当前影响的新观点和建议（每人2-3句，要体现各自立场）
+3. 新的困境或需要处理的问题（如果有的话）
+
+【顾问人设提醒】
+- 狮子：崇尚武力与威慑，说话简洁有力，军人作风
+- 狐狸：善于权谋与算计，绵里藏针，喜欢暗示
+- 天平：追求公正与稳定，引用数据，关心民众
+
+返回JSON格式：
+{{
+  "scene_update": "场景变化描述",
+  "new_dilemma": "新的困境或问题（可为空）",
+  "advisor_comments": {{
+    "lion": {{
+      "stance": "支持/反对/观望",
+      "comment": "狮子对上轮政令的评价和新建议",
+      "suggestion": "下一步建议（可选）"
+    }},
+    "fox": {{
+      "stance": "支持/反对/观望",
+      "comment": "狐狸对上轮政令的评价和新建议",
+      "suggestion": "下一步建议（可选）"
+    }},
+    "balance": {{
+      "stance": "支持/反对/观望",
+      "comment": "天平对上轮政令的评价和新建议",
+      "suggestion": "下一步建议（可选）"
+    }}
+  }}
+}}"""
+
+        try:
+            print(f"[ChapterEngine] 生成新回合场景...")
+            print(f"[ChapterEngine] 上一轮政令: {previous_decision[:50] if previous_decision else 'None'}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=800,
+            )
+            content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 新回合场景响应: {content[:100]}...")
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 新回合场景生成成功")
+                print(f"[ChapterEngine] 场景更新: {result.get('scene_update', '')[:50]}...")
+                return result
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON")
+
+        except Exception as e:
+            print(f"[ChapterEngine] 生成新回合场景失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # 默认返回
+        print("[ChapterEngine] 使用默认新回合场景")
+        return {
+            "scene_update": "政令已经开始执行，各方势力正在观望局势发展。",
+            "new_dilemma": "",
+            "advisor_comments": {
+                "lion": {"stance": "观望", "comment": "让我们看看效果如何。", "suggestion": ""},
+                "fox": {"stance": "观望", "comment": "局势尚不明朗。", "suggestion": ""},
+                "balance": {"stance": "观望", "comment": "需要观察民众的反应。", "suggestion": ""},
+            }
+        }
+
+    async def analyze_player_intent(
+        self,
+        game_state: GameState,
+        player_message: str,
+        chapter: Chapter,
+        conversation_history: List[dict] = None,
+    ) -> dict:
+        """
+        分析玩家在廷议阶段的意图
+        判断玩家是提问、质疑、挑拨还是准备发布政令
+        """
+        # 获取顾问关系
+        lion_relation = game_state.relations.get("lion")
+        fox_relation = game_state.relations.get("fox")
+        balance_relation = game_state.relations.get("balance")
+
+        history_text = ""
+        if conversation_history:
+            history_text = "\n".join([
+                f"{msg.get('speaker', '???')}: {msg.get('content', '')}"
+                for msg in conversation_history[-6:]  # 最近6条对话
+            ])
+
+        prompt = f"""你是《君主论》博弈游戏的意图分析器。分析玩家在廷议阶段的发言意图。
+
+【当前关卡】
+{chapter.name}: {chapter.dilemma}
+
+【顾问状态】
+- 狮子: 信任度 {lion_relation.trust if lion_relation else 50}
+- 狐狸: 信任度 {fox_relation.trust if fox_relation else 50}
+- 天平: 信任度 {balance_relation.trust if balance_relation else 50}
+
+【近期对话】
+{history_text if history_text else "（无）"}
+
+【玩家发言】
+"{player_message}"
+
+分析玩家的意图，返回JSON：
+{{
+  "intent": "question/challenge/provoke/debate/negotiate/command/other",
+  "target": "lion/fox/balance/all/none",
+  "tone": "friendly/neutral/hostile/manipulative",
+  "summary": "简短描述玩家想要什么",
+  "triggers_conflict": true/false,
+  "suggested_reactions": {{
+    "lion": "狮子应该如何反应（简短描述）",
+    "fox": "狐狸应该如何反应（简短描述）",
+    "balance": "天平应该如何反应（简短描述）"
+  }}
+}}
+
+意图说明：
+- question: 玩家在询问信息或寻求建议
+- challenge: 玩家在质疑某个顾问的建议或能力
+- provoke: 玩家在挑拨顾问之间的关系
+- debate: 玩家要求顾问互相辩论
+- negotiate: 玩家在尝试谈判或讨价还价
+- command: 玩家在下达命令
+- other: 其他意图"""
+
+        try:
+            print(f"[ChapterEngine] 分析玩家意图: {player_message[:50]}...")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=400,
+            )
+            content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 意图分析响应: {content[:100]}...")
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 意图分析成功: {result.get('intent', 'unknown')}")
+                return result
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON")
+
+        except Exception as e:
+            print(f"[ChapterEngine] 分析玩家意图失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print("[ChapterEngine] 使用默认意图分析结果")
+        return {
+            "intent": "other",
+            "target": "all",
+            "tone": "neutral",
+            "summary": player_message[:50],
+            "triggers_conflict": False,
+            "suggested_reactions": {
+                "lion": "简短回应",
+                "fox": "简短回应",
+                "balance": "简短回应"
+            }
+        }
+
+    async def generate_council_response(
+        self,
+        game_state: GameState,
+        player_message: str,
+        intent_analysis: dict,
+        chapter: Chapter,
+    ) -> dict:
+        """
+        根据玩家意图生成顾问在廷议中的回应
+        """
+        lion_relation = game_state.relations.get("lion")
+        fox_relation = game_state.relations.get("fox")
+        balance_relation = game_state.relations.get("balance")
+
+        intent = intent_analysis.get("intent", "other")
+        target = intent_analysis.get("target", "all")
+        tone = intent_analysis.get("tone", "neutral")
+        triggers_conflict = intent_analysis.get("triggers_conflict", False)
+        suggested_reactions = intent_analysis.get("suggested_reactions", {})
+
+        prompt = f"""你是《君主论》博弈游戏中的三位顾问。根据玩家的发言生成回应。
+
+【关卡背景】
+{chapter.name}: {chapter.dilemma}
+
+【玩家发言】
+"{player_message}"
+
+【意图分析】
+- 意图类型: {intent}
+- 针对目标: {target}
+- 语气: {tone}
+- 是否触发冲突: {triggers_conflict}
+
+【顾问状态与人设】
+🦁 狮子（信任度 {lion_relation.trust if lion_relation else 50}）:
+  - 人设：武力与威慑的化身，简洁有力，军人作风，崇尚"宁可被畏惧"
+  - 建议反应：{suggested_reactions.get("lion", "正常回应")}
+  {"- 当前敌对中，态度冷淡" if lion_relation and lion_relation.is_hostile else ""}
+
+🦊 狐狸（信任度 {fox_relation.trust if fox_relation else 50}）:
+  - 人设：权谋与狡诈的化身，绵里藏针，善于暗示，相信"目的证明手段"
+  - 建议反应：{suggested_reactions.get("fox", "正常回应")}
+  {"- 当前敌对中，暗藏杀机" if fox_relation and fox_relation.is_hostile else ""}
+
+⚖️ 天平（信任度 {balance_relation.trust if balance_relation else 50}）:
+  - 人设：公正与民心的化身，引用数据，关心民众，追求稳定
+  - 建议反应：{suggested_reactions.get("balance", "正常回应")}
+  {"- 当前敌对中，失望透顶" if balance_relation and balance_relation.is_hostile else ""}
+
+【回应要求】
+1. 如果玩家质疑某顾问：该顾问需防御性辩解，可能暴露性格缺陷
+2. 如果玩家挑拨：触发顾问之间的争吵或互相指责
+3. 如果玩家要求辩论：顾问之间展开交锋
+4. 如果玩家提问：根据各自立场给出不同角度的回答
+5. 低信任度的顾问应表现出不满或敷衍
+
+返回JSON格式：
+{{
+  "responses": {{
+    "lion": "狮子的回应（1-3句）",
+    "fox": "狐狸的回应（1-3句）",
+    "balance": "天平的回应（1-3句）"
+  }},
+  "conflict_triggered": true/false,
+  "conflict_description": "如果有冲突，描述冲突情况",
+  "trust_changes": {{
+    "lion": -3到3,
+    "fox": -3到3,
+    "balance": -3到3
+  }},
+  "atmosphere": "friendly/tense/hostile/chaotic"
+}}"""
+
+        try:
+            print(f"[ChapterEngine] 生成廷议回应...")
+            print(f"[ChapterEngine] 玩家发言: {player_message[:50]}...")
+            print(f"[ChapterEngine] 意图: {intent_analysis.get('intent', 'unknown')}")
+            print(f"[ChapterEngine] 使用模型: {self.model}")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,
+                max_tokens=600,
+            )
+            content = response.choices[0].message.content.strip()
+            print(f"[ChapterEngine] 廷议回应响应: {content[:100]}...")
+
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[ChapterEngine] 廷议回应生成成功")
+                return result
+            else:
+                print(f"[ChapterEngine] 无法从响应中提取JSON")
+
+        except Exception as e:
+            print(f"[ChapterEngine] 生成廷议回应失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print("[ChapterEngine] 使用默认廷议回应")
+        return {
+            "responses": {
+                "lion": "臣听候差遣。",
+                "fox": "需要深思熟虑。",
+                "balance": "当以民为本。"
+            },
+            "conflict_triggered": False,
+            "conflict_description": "",
+            "trust_changes": {"lion": 0, "fox": 0, "balance": 0},
+            "atmosphere": "neutral"
         }

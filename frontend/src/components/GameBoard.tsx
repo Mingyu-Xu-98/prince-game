@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { PowerMeter } from './PowerMeter';
 import { theme, SPEAKER_CONFIG_LIGHT } from '../theme';
+import { gameApi } from '../api/gameApi';
 import type { GameState, ChapterScene, DialogueEntry, DecisionResult, DecreeConsequence } from '../types/game';
 
 interface GameBoardProps {
@@ -10,11 +11,16 @@ interface GameBoardProps {
   currentChapter: ChapterScene;
   dialogueHistory: DialogueEntry[];
   isLoading: boolean;
+  sessionId: string;
+  apiKey: string;
+  model?: string;
   onSubmitDecision: (input: string, followedAdvisor?: string) => Promise<DecisionResult | null>;
   onPrivateAudience?: (advisor: string, message: string) => Promise<string | null>;
-  onNextChapter?: () => void;
+  onNextChapter?: () => Promise<void>;
   onSkipConsequences?: (consequences: DecreeConsequence[]) => void;
   onContinueWithConsequences?: (consequences: DecreeConsequence[]) => void;
+  onEndChapterEarly?: (pendingConsequences: DecreeConsequence[]) => void;
+  onUpdateGameState?: (state: GameState) => void;
 }
 
 // 游戏模式
@@ -25,11 +31,16 @@ export function GameBoard({
   currentChapter,
   dialogueHistory,
   isLoading,
+  sessionId,
+  apiKey,
+  model,
   onSubmitDecision,
   onPrivateAudience,
   onNextChapter,
   onSkipConsequences,
   onContinueWithConsequences,
+  onEndChapterEarly: _onEndChapterEarly, // 保留但标记为未使用（将来可能用于父组件回调）
+  onUpdateGameState,
 }: GameBoardProps) {
   const [gameMode, setGameMode] = useState<GameMode>('council');
   const [privateTarget, setPrivateTarget] = useState<string | null>(null);
@@ -42,6 +53,9 @@ export function GameBoard({
 
   // 当前正在处理的后果
   const [activeConsequences, setActiveConsequences] = useState<DecreeConsequence[]>([]);
+
+  // 保存最后发布的政令内容（用于继续回合时传递给API）
+  const [lastDecreeContent, setLastDecreeContent] = useState<string>('');
 
   const historyEndRef = useRef<HTMLDivElement>(null);
 
@@ -57,8 +71,19 @@ export function GameBoard({
   const [councilLoading, setCouncilLoading] = useState(false);
   const [councilMessages, setCouncilMessages] = useState<DialogueEntry[]>([]);
 
+  // 廷议气氛状态（用于未来的 UI 增强）
+  // @ts-ignore - 保留供未来使用
+  const [councilAtmosphere, setCouncilAtmosphere] = useState<string>('neutral');
+
+  // 提前结束关卡确认弹窗
+  const [showEndChapterConfirm, setShowEndChapterConfirm] = useState(false);
+  const [endingChapter, setEndingChapter] = useState(false);
+
+  // 正在加载下一关
+  const [loadingNextChapter, setLoadingNextChapter] = useState(false);
+
   const handleCouncilDiscuss = async () => {
-    if (!input.trim() || councilLoading) return;
+    if (!input.trim() || councilLoading || !sessionId || !apiKey) return;
 
     const userMessage = input.trim();
     setInput('');
@@ -72,22 +97,79 @@ export function GameBoard({
     setCouncilMessages(prev => [...prev, playerMsg]);
 
     try {
+      // 使用新的 councilChat API 来分析玩家意图并生成回应
+      const result = await gameApi.councilChat(
+        sessionId,
+        userMessage,
+        councilMessages.map(m => ({ speaker: m.speaker, content: m.content })),
+        apiKey,
+        model
+      );
+
+      if (result.success) {
+        // 添加顾问回应
+        const responses = result.responses;
+        const lionResponse = responses.lion;
+        const foxResponse = responses.fox;
+        const balanceResponse = responses.balance;
+
+        if (lionResponse) {
+          setCouncilMessages(prev => [...prev, {
+            turn: currentChapter.current_turn,
+            speaker: 'lion' as const,
+            content: lionResponse
+          }]);
+        }
+        if (foxResponse) {
+          setCouncilMessages(prev => [...prev, {
+            turn: currentChapter.current_turn,
+            speaker: 'fox' as const,
+            content: foxResponse
+          }]);
+        }
+        if (balanceResponse) {
+          setCouncilMessages(prev => [...prev, {
+            turn: currentChapter.current_turn,
+            speaker: 'balance' as const,
+            content: balanceResponse
+          }]);
+        }
+
+        // 更新廷议气氛（供将来使用）
+        if (result.atmosphere) {
+          setCouncilAtmosphere(result.atmosphere);
+        }
+
+        // 如果触发了冲突，显示冲突描述
+        if (result.conflict_triggered && result.conflict_description) {
+          setCouncilMessages(prev => [...prev, {
+            turn: currentChapter.current_turn,
+            speaker: 'system',
+            content: `⚡ ${result.conflict_description}`
+          }]);
+        }
+
+        // 更新游戏状态（信任度变化）
+        if (onUpdateGameState && result.state) {
+          onUpdateGameState(result.state);
+        }
+      }
+    } catch (error) {
+      console.error('廷议讨论失败:', error);
+      // 回退到旧逻辑
       if (onPrivateAudience) {
         const advisors = ['lion', 'fox', 'balance'] as const;
         for (const advisor of advisors) {
           const response = await onPrivateAudience(advisor, userMessage);
           if (response) {
-            const advisorResponse: DialogueEntry = {
+            setCouncilMessages(prev => [...prev, {
               turn: currentChapter.current_turn,
               speaker: advisor,
               content: response
-            };
-            setCouncilMessages(prev => [...prev, advisorResponse]);
+            }]);
           }
         }
       }
-    } catch (error) {
-      console.error('廷议讨论失败:', error);
     } finally {
       setCouncilLoading(false);
     }
@@ -97,7 +179,11 @@ export function GameBoard({
   const handleDecree = async () => {
     if (!decreeInput.trim() || isLoading) return;
 
-    const result = await onSubmitDecision(decreeInput.trim());
+    // 保存政令内容用于后续继续回合
+    const currentDecree = decreeInput.trim();
+    setLastDecreeContent(currentDecree);
+
+    const result = await onSubmitDecision(currentDecree);
     if (result) {
       // 后端会返回 decree_consequences，由 AI 基于《君主论》原则分析生成
       setLastResult(result);
@@ -156,18 +242,123 @@ export function GameBoard({
     }
   };
 
+  // 继续当前回合时的场景更新状态
+  const [sceneUpdate, setSceneUpdate] = useState<string>('');
+  const [newDilemma, setNewDilemma] = useState<string>('');
+  const [newAdvisorComments, setNewAdvisorComments] = useState<Record<string, { stance: string; comment: string; suggestion?: string }>>({});
+
   // 进入下一个场景（继续处理影响）
-  const handleNextScene = () => {
-    // 保存当前的后果到活动后果列表
-    if (lastResult?.decree_consequences && lastResult.decree_consequences.length > 0) {
-      setActiveConsequences(lastResult.decree_consequences);
-      // 通知父组件继续处理后果
-      if (onContinueWithConsequences) {
-        onContinueWithConsequences(lastResult.decree_consequences);
+  const handleNextScene = async () => {
+    if (!sessionId || !apiKey) {
+      // 回退到旧逻辑
+      if (lastResult?.decree_consequences && lastResult.decree_consequences.length > 0) {
+        setActiveConsequences(lastResult.decree_consequences);
+        if (onContinueWithConsequences) {
+          onContinueWithConsequences(lastResult.decree_consequences);
+        }
       }
+      setLastResult(null);
+      setGameMode('council');
+      return;
     }
+
+    // 保存当前的后果到活动后果列表
+    const consequences = lastResult?.decree_consequences || [];
+    if (consequences.length > 0) {
+      setActiveConsequences(consequences);
+    }
+
+    try {
+      // 调用 continueRound API 获取新场景和顾问评论
+      // 使用保存的政令内容
+      console.log('调用 continueRound API...', { sessionId, lastDecreeContent, consequences });
+
+      const result = await gameApi.continueRound(
+        sessionId,
+        lastDecreeContent || '上一轮政令',
+        consequences,
+        apiKey,
+        model
+      );
+
+      console.log('continueRound API 返回:', result);
+
+      if (result.success) {
+        // 设置新场景更新
+        console.log('设置场景更新:', result.scene_update);
+        console.log('设置新困境:', result.new_dilemma);
+        console.log('设置顾问评论:', result.advisor_comments);
+
+        setSceneUpdate(result.scene_update || '');
+        setNewDilemma(result.new_dilemma || '');
+        setNewAdvisorComments(result.advisor_comments || {});
+
+        // 更新游戏状态
+        if (onUpdateGameState && result.state) {
+          onUpdateGameState(result.state);
+        }
+
+        // 通知父组件
+        if (onContinueWithConsequences && consequences.length > 0) {
+          onContinueWithConsequences(consequences);
+        }
+      } else {
+        console.error('continueRound API 返回失败');
+      }
+    } catch (error) {
+      console.error('继续回合失败:', error);
+    }
+
     setLastResult(null);
     setGameMode('council');
+    setCouncilMessages([]);  // 清空之前的廷议对话
+  };
+
+  // 提前结束关卡
+  const handleEndChapterEarly = async () => {
+    if (!sessionId || !apiKey) {
+      setShowEndChapterConfirm(false);
+      return;
+    }
+
+    setEndingChapter(true);
+
+    try {
+      // 收集所有未处理的后果
+      const allPendingConsequences = [
+        ...activeConsequences,
+        ...(lastResult?.decree_consequences || []),
+      ];
+
+      const result = await gameApi.endChapterEarly(
+        sessionId,
+        allPendingConsequences,
+        apiKey,
+        model
+      );
+
+      if (result.success) {
+        // 更新游戏状态
+        if (onUpdateGameState && result.state) {
+          onUpdateGameState(result.state);
+        }
+
+        // 通知父组件跳过后果
+        if (onSkipConsequences && allPendingConsequences.length > 0) {
+          onSkipConsequences(allPendingConsequences);
+        }
+
+        // 如果有下一关，进入下一关
+        if (result.next_chapter_available && onNextChapter) {
+          onNextChapter();
+        }
+      }
+    } catch (error) {
+      console.error('提前结束关卡失败:', error);
+    } finally {
+      setEndingChapter(false);
+      setShowEndChapterConfirm(false);
+    }
   };
 
   // 过滤对话历史
@@ -248,28 +439,51 @@ export function GameBoard({
           <span style={{ color: theme.accent.goldDark, fontSize: '14px', fontWeight: 'bold' }}>廷议进行中</span>
           <span style={{ color: theme.text.muted, fontSize: '12px' }}>与顾问讨论后发布政令</span>
         </div>
-        <button
-          onClick={() => setShowDecreeModal(true)}
-          disabled={isLoading || gameState.game_over}
-          style={{
-            padding: '10px 24px',
-            background: isLoading || gameState.game_over
-              ? theme.border.medium
-              : `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
-            color: isLoading || gameState.game_over ? theme.text.muted : '#FFFFFF',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: 'bold',
-            cursor: isLoading || gameState.game_over ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: isLoading || gameState.game_over ? 'none' : theme.shadow.md,
-          }}
-        >
-          📜 发布政令
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* 提前结束关卡按钮 */}
+          <button
+            onClick={() => setShowEndChapterConfirm(true)}
+            disabled={isLoading || gameState.game_over}
+            style={{
+              padding: '10px 16px',
+              background: 'transparent',
+              color: theme.text.secondary,
+              border: `1px solid ${theme.border.medium}`,
+              borderRadius: '8px',
+              fontSize: '13px',
+              cursor: isLoading || gameState.game_over ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.2s',
+            }}
+            title="提前结束当前关卡，进入下一关（未处理的影响将累积）"
+          >
+            ⏭️ 结束关卡
+          </button>
+          <button
+            onClick={() => setShowDecreeModal(true)}
+            disabled={isLoading || gameState.game_over}
+            style={{
+              padding: '10px 24px',
+              background: isLoading || gameState.game_over
+                ? theme.border.medium
+                : `linear-gradient(135deg, ${theme.accent.gold} 0%, ${theme.accent.goldLight} 100%)`,
+              color: isLoading || gameState.game_over ? theme.text.muted : '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              cursor: isLoading || gameState.game_over ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              boxShadow: isLoading || gameState.game_over ? 'none' : theme.shadow.md,
+            }}
+          >
+            📜 发布政令
+          </button>
+        </div>
       </div>
 
       {/* 廷议对话区 */}
@@ -354,8 +568,214 @@ export function GameBoard({
           </div>
         )}
 
-        {/* 顾问建议 */}
-        {councilDebate && (
+        {/* 场景更新提示（来自继续回合） */}
+        {sceneUpdate && (
+          <div style={{
+            marginBottom: '20px',
+            padding: '16px',
+            backgroundColor: '#EBF4FF',
+            borderRadius: '12px',
+            border: '1px solid #93C5FD40',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              marginBottom: '10px',
+            }}>
+              <span style={{ fontSize: '18px' }}>🎭</span>
+              <span style={{ color: '#1E40AF', fontWeight: 'bold', fontSize: '14px' }}>
+                局势变化
+              </span>
+              <button
+                onClick={() => setSceneUpdate('')}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '4px 8px',
+                  backgroundColor: 'transparent',
+                  border: '1px solid #93C5FD',
+                  borderRadius: '4px',
+                  color: '#1E40AF',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                }}
+              >
+                关闭
+              </button>
+            </div>
+            <p style={{
+              color: theme.text.secondary,
+              fontSize: '14px',
+              lineHeight: '1.7',
+              margin: 0,
+            }}>
+              {sceneUpdate}
+            </p>
+            {newDilemma && (
+              <div style={{
+                marginTop: '12px',
+                padding: '10px 12px',
+                backgroundColor: 'rgba(255,255,255,0.6)',
+                borderRadius: '6px',
+                border: '1px solid #93C5FD30',
+              }}>
+                <div style={{ fontSize: '12px', color: '#1E40AF', marginBottom: '4px', fontWeight: 'bold' }}>
+                  📋 新的问题
+                </div>
+                <div style={{ fontSize: '13px', color: theme.text.secondary }}>
+                  {newDilemma}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 顾问针对上轮政令的新观点（来自继续回合） */}
+        {Object.keys(newAdvisorComments).length > 0 && (
+          <div style={{
+            marginBottom: '24px',
+            padding: '20px',
+            backgroundColor: '#FEF3C7',
+            borderRadius: '12px',
+            border: `1px solid ${theme.accent.gold}30`,
+            boxShadow: theme.shadow.sm,
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              marginBottom: '16px',
+            }}>
+              <span style={{ fontSize: '16px' }}>💬</span>
+              <span style={{ color: theme.accent.goldDark, fontWeight: 'bold', fontSize: '14px' }}>
+                顾问们对上轮政令的反馈
+              </span>
+              <button
+                onClick={() => setNewAdvisorComments({})}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '4px 8px',
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${theme.accent.gold}`,
+                  borderRadius: '4px',
+                  color: theme.accent.goldDark,
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                }}
+              >
+                关闭
+              </button>
+            </div>
+
+            {newAdvisorComments.lion && (
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '18px' }}>🦁</span>
+                  <span style={{ color: theme.advisor.lion, fontWeight: 'bold', fontSize: '13px' }}>狮子</span>
+                  {newAdvisorComments.lion.stance && (
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      backgroundColor: newAdvisorComments.lion.stance === '支持' ? '#D1FAE5' :
+                        newAdvisorComments.lion.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
+                      color: newAdvisorComments.lion.stance === '支持' ? '#059669' :
+                        newAdvisorComments.lion.stance === '反对' ? '#DC2626' : '#6B7280',
+                      borderRadius: '3px',
+                    }}>
+                      {newAdvisorComments.lion.stance}
+                    </span>
+                  )}
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
+                  "{newAdvisorComments.lion.comment}"
+                </div>
+                {newAdvisorComments.lion.suggestion && (
+                  <div style={{
+                    marginTop: '6px',
+                    paddingLeft: '26px',
+                    fontSize: '12px',
+                    color: theme.advisor.lion,
+                  }}>
+                    💡 {newAdvisorComments.lion.suggestion}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {newAdvisorComments.fox && (
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '18px' }}>🦊</span>
+                  <span style={{ color: theme.advisor.fox, fontWeight: 'bold', fontSize: '13px' }}>狐狸</span>
+                  {newAdvisorComments.fox.stance && (
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      backgroundColor: newAdvisorComments.fox.stance === '支持' ? '#D1FAE5' :
+                        newAdvisorComments.fox.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
+                      color: newAdvisorComments.fox.stance === '支持' ? '#059669' :
+                        newAdvisorComments.fox.stance === '反对' ? '#DC2626' : '#6B7280',
+                      borderRadius: '3px',
+                    }}>
+                      {newAdvisorComments.fox.stance}
+                    </span>
+                  )}
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
+                  "{newAdvisorComments.fox.comment}"
+                </div>
+                {newAdvisorComments.fox.suggestion && (
+                  <div style={{
+                    marginTop: '6px',
+                    paddingLeft: '26px',
+                    fontSize: '12px',
+                    color: theme.advisor.fox,
+                  }}>
+                    💡 {newAdvisorComments.fox.suggestion}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {newAdvisorComments.balance && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '18px' }}>⚖️</span>
+                  <span style={{ color: theme.advisor.balance, fontWeight: 'bold', fontSize: '13px' }}>天平</span>
+                  {newAdvisorComments.balance.stance && (
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      backgroundColor: newAdvisorComments.balance.stance === '支持' ? '#D1FAE5' :
+                        newAdvisorComments.balance.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
+                      color: newAdvisorComments.balance.stance === '支持' ? '#059669' :
+                        newAdvisorComments.balance.stance === '反对' ? '#DC2626' : '#6B7280',
+                      borderRadius: '3px',
+                    }}>
+                      {newAdvisorComments.balance.stance}
+                    </span>
+                  )}
+                </div>
+                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
+                  "{newAdvisorComments.balance.comment}"
+                </div>
+                {newAdvisorComments.balance.suggestion && (
+                  <div style={{
+                    marginTop: '6px',
+                    paddingLeft: '26px',
+                    fontSize: '12px',
+                    color: theme.advisor.balance,
+                  }}>
+                    💡 {newAdvisorComments.balance.suggestion}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 顾问建议（初始建议） */}
+        {councilDebate && !sceneUpdate && Object.keys(newAdvisorComments).length === 0 && (
           <div style={{
             marginBottom: '24px',
             padding: '20px',
@@ -756,14 +1176,55 @@ export function GameBoard({
     }
   };
 
+  // 重置所有本地状态，准备进入新关卡
+  const resetLocalState = () => {
+    setLastResult(null);
+    setGameMode('council');
+    setActiveConsequences([]);
+    setSceneUpdate('');
+    setNewDilemma('');
+    setNewAdvisorComments({});
+    setCouncilMessages([]);
+    setLastDecreeContent('');
+    setPrivateMessages([]);
+    setPrivateTarget(null);
+    setInput('');
+    setDecreeInput('');
+    setShowDecreeModal(false);
+  };
+
   // 处理跳过后续影响，直接进入下一关
-  const handleSkipConsequences = () => {
+  const handleSkipConsequences = async () => {
     if (lastResult?.decree_consequences && onSkipConsequences) {
       onSkipConsequences(lastResult.decree_consequences);
     }
+
+    // 显示加载状态
+    setLoadingNextChapter(true);
+
+    // 重置游戏模式和状态，准备进入下一关
+    resetLocalState();
+
     if (onNextChapter) {
-      onNextChapter();
+      await onNextChapter();
     }
+
+    setLoadingNextChapter(false);
+  };
+
+  // 处理进入下一关（关卡结束后）
+  const handleGoToNextChapter = async () => {
+    // 显示加载状态
+    setLoadingNextChapter(true);
+
+    // 重置游戏模式和状态
+    resetLocalState();
+
+    if (onNextChapter) {
+      await onNextChapter();
+    }
+
+    setLoadingNextChapter(false);
   };
 
   // 渲染政令结果
@@ -1146,7 +1607,7 @@ export function GameBoard({
             {/* 关卡结束且有下一关时显示进入下一关按钮 */}
             {chapterEnded && hasNextChapter && onNextChapter && (
               <button
-                onClick={onNextChapter}
+                onClick={handleGoToNextChapter}
                 style={{
                   width: '100%',
                   padding: '16px',
@@ -1167,7 +1628,7 @@ export function GameBoard({
             {/* 关卡结束但没有下一关（失败或通关）时返回关卡选择 */}
             {chapterEnded && !hasNextChapter && onNextChapter && (
               <button
-                onClick={onNextChapter}
+                onClick={handleGoToNextChapter}
                 style={{
                   width: '100%',
                   padding: '16px',
@@ -1367,6 +1828,58 @@ export function GameBoard({
         position: 'relative',
         overflow: 'hidden',
       }}>
+        {/* 加载下一关的全屏遮罩 */}
+        {loadingNextChapter && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}>
+            <div style={{ fontSize: '48px', marginBottom: '20px' }}>🏰</div>
+            <div style={{
+              color: theme.accent.goldDark,
+              fontSize: '20px',
+              fontWeight: 'bold',
+              marginBottom: '12px',
+            }}>
+              正在进入下一关...
+            </div>
+            <div style={{
+              color: theme.text.muted,
+              fontSize: '14px',
+            }}>
+              顾问们正在准备新的议题
+            </div>
+            <div style={{
+              marginTop: '24px',
+              width: '200px',
+              height: '4px',
+              backgroundColor: theme.border.light,
+              borderRadius: '2px',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                width: '30%',
+                height: '100%',
+                backgroundColor: theme.accent.gold,
+                borderRadius: '2px',
+                animation: 'loading 1.5s ease-in-out infinite',
+              }} />
+            </div>
+            <style>{`
+              @keyframes loading {
+                0% { width: 0%; margin-left: 0%; }
+                50% { width: 50%; margin-left: 25%; }
+                100% { width: 0%; margin-left: 100%; }
+              }
+            `}</style>
+          </div>
+        )}
         {gameMode === 'council' && renderCouncilMode()}
         {gameMode === 'private_audience' && renderPrivateAudienceMode()}
         {gameMode === 'decree_result' && renderDecreeResult()}
@@ -1459,6 +1972,137 @@ export function GameBoard({
                 }}
               >
                 {isLoading ? '发布中...' : '确认发布'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 提前结束关卡确认弹窗 */}
+      {showEndChapterConfirm && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+        }}>
+          <div style={{
+            width: '450px',
+            backgroundColor: theme.bg.card,
+            borderRadius: '16px',
+            border: `2px solid ${theme.status.warning}`,
+            padding: '32px',
+            boxShadow: theme.shadow.lg,
+          }}>
+            <h2 style={{
+              color: theme.status.warning,
+              fontSize: '20px',
+              margin: '0 0 8px 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}>
+              ⏭️ 提前结束关卡
+            </h2>
+            <p style={{ color: theme.text.secondary, fontSize: '14px', margin: '0 0 20px 0', lineHeight: '1.6' }}>
+              确定要提前结束当前关卡吗？
+            </p>
+
+            {/* 警告信息 */}
+            <div style={{
+              backgroundColor: '#FFF7ED',
+              borderRadius: '8px',
+              padding: '16px',
+              marginBottom: '20px',
+              border: '1px solid #FDBA7440',
+            }}>
+              <div style={{ fontSize: '13px', color: '#C2410C', lineHeight: '1.6' }}>
+                <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>⚠️ 注意事项：</div>
+                <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                  <li>未处理的政令影响将会累积到后续关卡</li>
+                  <li>累积的影响可能会以更严重的形式爆发</li>
+                  <li>提前结束可能会影响最终评分</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* 当前未处理的影响 */}
+            {(activeConsequences.length > 0 || (lastResult?.decree_consequences?.length ?? 0) > 0) && (
+              <div style={{
+                backgroundColor: theme.bg.secondary,
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '20px',
+                border: `1px solid ${theme.border.light}`,
+              }}>
+                <div style={{ fontSize: '12px', color: theme.text.muted, marginBottom: '8px' }}>
+                  当前未处理的影响：{activeConsequences.length + (lastResult?.decree_consequences?.length ?? 0)} 项
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {[...activeConsequences, ...(lastResult?.decree_consequences || [])].slice(0, 5).map((c, idx) => (
+                    <span key={idx} style={{
+                      fontSize: '11px',
+                      padding: '3px 8px',
+                      backgroundColor: getSeverityInfo(c.severity).bgColor,
+                      color: getSeverityInfo(c.severity).color,
+                      borderRadius: '4px',
+                    }}>
+                      {c.title}
+                    </span>
+                  ))}
+                  {[...activeConsequences, ...(lastResult?.decree_consequences || [])].length > 5 && (
+                    <span style={{
+                      fontSize: '11px',
+                      padding: '3px 8px',
+                      backgroundColor: theme.bg.secondary,
+                      color: theme.text.muted,
+                      borderRadius: '4px',
+                    }}>
+                      +{[...activeConsequences, ...(lastResult?.decree_consequences || [])].length - 5} 项
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button
+                onClick={() => setShowEndChapterConfirm(false)}
+                disabled={endingChapter}
+                style={{
+                  flex: 1,
+                  padding: '14px',
+                  backgroundColor: theme.bg.secondary,
+                  color: theme.text.primary,
+                  border: `1px solid ${theme.border.medium}`,
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  cursor: endingChapter ? 'not-allowed' : 'pointer',
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleEndChapterEarly}
+                disabled={endingChapter}
+                style={{
+                  flex: 1,
+                  padding: '14px',
+                  background: endingChapter
+                    ? theme.border.medium
+                    : `linear-gradient(135deg, ${theme.status.warning} 0%, #F59E0B 100%)`,
+                  color: endingChapter ? theme.text.muted : '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: endingChapter ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {endingChapter ? '结束中...' : '确认结束'}
               </button>
             </div>
           </div>

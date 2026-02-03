@@ -37,6 +37,9 @@ interface UseGameStateReturn {
   // 累积的未处理影响
   pendingConsequences: PendingConsequence[];
 
+  // 状态更新器
+  setGameState: (state: GameState) => void;
+
   // 操作
   startNewGame: () => Promise<void>;
   selectObservationLens: (lens: string) => Promise<void>;
@@ -48,7 +51,7 @@ interface UseGameStateReturn {
   exitToSetup: () => void;
   skipConsequences: (consequences: DecreeConsequence[]) => void;
   continueWithConsequences: (consequences: DecreeConsequence[]) => void;
-  goToNextChapter: () => void;
+  goToNextChapter: () => Promise<void>;
 }
 
 // 本地存储键名
@@ -557,12 +560,71 @@ export function useGameState(): UseGameStateReturn {
     setDialogueHistory(prev => [...prev, ...consequenceMessages]);
   }, [currentChapter]);
 
-  // 进入下一关
-  const goToNextChapter = useCallback(() => {
-    setCurrentChapter(null);
-    setGamePhase('chapter_select');
+  // 进入下一关 - 自动开始下一个未解锁的关卡
+  const goToNextChapter = useCallback(async () => {
+    if (!sessionId || !apiKey || !currentChapter) {
+      // 如果缺少必要信息，回退到章节选择
+      setCurrentChapter(null);
+      setGamePhase('chapter_select');
+      setDialogueHistory([]);
+      return;
+    }
+
+    // 获取当前关卡 ID 并找到下一个关卡
+    const currentChapterId = currentChapter.id;
+    const chapterOrder = ['chapter_1', 'chapter_2', 'chapter_3', 'chapter_4', 'chapter_5'];
+    const currentIndex = chapterOrder.indexOf(currentChapterId);
+
+    if (currentIndex === -1 || currentIndex >= chapterOrder.length - 1) {
+      // 没有下一关，回到章节选择
+      setCurrentChapter(null);
+      setGamePhase('chapter_select');
+      setDialogueHistory([]);
+      return;
+    }
+
+    const nextChapterId = chapterOrder[currentIndex + 1];
+
+    // 直接开始下一关
+    setIsLoading(true);
+    setError(null);
     setDialogueHistory([]);
-  }, []);
+
+    try {
+      const result = await gameApi.startChapter(
+        sessionId,
+        nextChapterId,
+        apiKey,
+        model || undefined
+      );
+
+      setCurrentChapter(result.chapter);
+      setGameState(result.state);
+      setGamePhase('playing');
+
+      // 添加开场对话
+      if (result.chapter.opening_narration) {
+        const openingDialogue: DialogueEntry = {
+          turn: 1,
+          speaker: 'system',
+          content: result.chapter.opening_narration,
+        };
+        setDialogueHistory([openingDialogue]);
+      }
+
+      // 更新可用章节列表中的解锁状态
+      setAvailableChapters(prev => prev.map(ch =>
+        ch.id === nextChapterId ? { ...ch, unlocked: true } : ch
+      ));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '开始下一关失败');
+      // 出错时回到章节选择
+      setCurrentChapter(null);
+      setGamePhase('chapter_select');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [sessionId, apiKey, model, currentChapter]);
 
   // 密谈 - 单独召见顾问
   const privateAudience = useCallback(async (advisor: string, message: string): Promise<string | null> => {
@@ -631,6 +693,9 @@ export function useGameState(): UseGameStateReturn {
     setModel: handleSetModel,
     // 累积的未处理影响
     pendingConsequences,
+
+    // 状态更新器
+    setGameState,
 
     // 操作
     startNewGame,

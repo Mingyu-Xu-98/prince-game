@@ -4,7 +4,7 @@
 """
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -98,6 +98,32 @@ class HandleConsequenceRequest(BaseModel):
     session_id: str
     consequence_id: str
     player_response: str
+    api_key: str
+    model: Optional[str] = None
+
+
+class ContinueRoundRequest(BaseModel):
+    """继续当前回合请求"""
+    session_id: str
+    previous_decision: str
+    consequences: List[dict] = []
+    api_key: str
+    model: Optional[str] = None
+
+
+class CouncilChatRequest(BaseModel):
+    """廷议对话请求"""
+    session_id: str
+    message: str
+    conversation_history: List[dict] = []
+    api_key: str
+    model: Optional[str] = None
+
+
+class EndChapterRequest(BaseModel):
+    """提前结束关卡请求"""
+    session_id: str
+    pending_consequences: List[dict] = []
     api_key: str
     model: Optional[str] = None
 
@@ -433,6 +459,12 @@ async def start_chapter(request: StartChapterRequest):
 @app.post("/api/game/decision")
 async def make_decision(request: PlayerDecisionRequest):
     """处理玩家决策 - 集成新裁决系统"""
+    print(f"[API] /api/game/decision 被调用")
+    print(f"[API] session_id: {request.session_id}")
+    print(f"[API] decision: {request.decision[:50] if request.decision else 'None'}...")
+    print(f"[API] api_key 前8位: {request.api_key[:8] if request.api_key else 'None'}...")
+    print(f"[API] model: {request.model}")
+
     game_state = await session_store.get(request.session_id)
     if not game_state:
         raise HTTPException(status_code=404, detail="游戏会话不存在")
@@ -528,10 +560,14 @@ async def make_decision(request: PlayerDecisionRequest):
 
     # 计算权力变化
     result["power_changes"] = result.get("impact", {"authority": 0, "fear": 0, "love": 0})
+    print(f"[API] 权力变化: {result['power_changes']}")
+    print(f"[API] 顾问回应: {list(advisor_responses.keys())}")
+    print(f"[API] 顾问回应内容: {advisor_responses}")
 
     # 确保政令后果被返回（如果存在）
     if "decree_consequences" not in result:
         result["decree_consequences"] = []
+    print(f"[API] 政令后果数量: {len(result['decree_consequences'])}")
 
     # 检查是否需要进入下一关
     if result["chapter_result"]["chapter_ended"] and result["chapter_result"]["victory"]:
@@ -706,6 +742,169 @@ async def handle_consequence(request: HandleConsequenceRequest):
         "advisor_comments": result.get("advisor_comments", {}),
         "consequence_resolved": result.get("consequence_resolved", False),
         "new_developments": result.get("new_developments", []),
+        "state": game_state.to_summary(),
+    }
+
+
+@app.post("/api/game/continue-round")
+async def continue_round(request: ContinueRoundRequest):
+    """继续当前回合 - 生成新场景和顾问评论"""
+    print(f"[API] /api/game/continue-round 被调用")
+    print(f"[API] session_id: {request.session_id}")
+    print(f"[API] previous_decision: {request.previous_decision[:50] if request.previous_decision else 'None'}...")
+    print(f"[API] consequences 数量: {len(request.consequences)}")
+    print(f"[API] api_key 前8位: {request.api_key[:8] if request.api_key else 'None'}...")
+    print(f"[API] model: {request.model}")
+
+    game_state = await session_store.get(request.session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    if game_state.game_over:
+        raise HTTPException(status_code=400, detail="游戏已结束")
+
+    chapter = ChapterLibrary.get_chapter(ChapterID(game_state.current_chapter))
+    if not chapter:
+        raise HTTPException(status_code=404, detail="关卡不存在")
+
+    chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
+
+    # 生成新回合场景
+    result = await chapter_engine.generate_next_round_scene(
+        game_state=game_state,
+        previous_decision=request.previous_decision,
+        consequences=request.consequences,
+        chapter=chapter,
+    )
+
+    print(f"[API] continue-round 结果: scene_update={result.get('scene_update', '')[:50] if result.get('scene_update') else 'None'}...")
+    print(f"[API] continue-round 顾问评论: {list(result.get('advisor_comments', {}).keys())}")
+
+    await session_store.set(request.session_id, game_state)
+
+    return {
+        "success": True,
+        "scene_update": result.get("scene_update", ""),
+        "new_dilemma": result.get("new_dilemma", ""),
+        "advisor_comments": result.get("advisor_comments", {}),
+        "state": game_state.to_summary(),
+    }
+
+
+@app.post("/api/game/council-chat")
+async def council_chat(request: CouncilChatRequest):
+    """廷议对话 - 分析玩家意图并生成顾问回应"""
+    print(f"[API] /api/game/council-chat 被调用")
+    print(f"[API] session_id: {request.session_id}")
+    print(f"[API] message: {request.message[:50] if request.message else 'None'}...")
+    print(f"[API] api_key 前8位: {request.api_key[:8] if request.api_key else 'None'}...")
+    print(f"[API] model: {request.model}")
+
+    game_state = await session_store.get(request.session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    if game_state.game_over:
+        raise HTTPException(status_code=400, detail="游戏已结束")
+
+    chapter = ChapterLibrary.get_chapter(ChapterID(game_state.current_chapter))
+    if not chapter:
+        raise HTTPException(status_code=404, detail="关卡不存在")
+
+    chapter_engine = ChapterEngine(api_key=request.api_key, model=request.model)
+
+    # 分析玩家意图
+    intent_analysis = await chapter_engine.analyze_player_intent(
+        game_state=game_state,
+        player_message=request.message,
+        chapter=chapter,
+        conversation_history=request.conversation_history,
+    )
+
+    # 生成顾问回应
+    response = await chapter_engine.generate_council_response(
+        game_state=game_state,
+        player_message=request.message,
+        intent_analysis=intent_analysis,
+        chapter=chapter,
+    )
+
+    print(f"[API] council-chat 意图分析: {intent_analysis.get('intent', 'unknown')}")
+    print(f"[API] council-chat 回应: {list(response.get('responses', {}).keys())}")
+
+    # 更新顾问信任度
+    trust_changes = response.get("trust_changes", {})
+    for advisor, change in trust_changes.items():
+        if change != 0 and advisor in game_state.relations:
+            relation = game_state.relations[advisor]
+            relation.trust = max(0, min(100, relation.trust + change))
+
+    # 记录对话
+    game_state.add_dialogue(speaker="player", content=request.message)
+    for advisor, resp in response.get("responses", {}).items():
+        game_state.add_dialogue(speaker=advisor, content=resp)
+
+    await session_store.set(request.session_id, game_state)
+
+    return {
+        "success": True,
+        "intent": intent_analysis,
+        "responses": response.get("responses", {}),
+        "conflict_triggered": response.get("conflict_triggered", False),
+        "conflict_description": response.get("conflict_description", ""),
+        "trust_changes": trust_changes,
+        "atmosphere": response.get("atmosphere", "neutral"),
+        "state": game_state.to_summary(),
+    }
+
+
+@app.post("/api/game/end-chapter")
+async def end_chapter_early(request: EndChapterRequest):
+    """提前结束当前关卡 - 累积未解决的影响到后续关卡"""
+    game_state = await session_store.get(request.session_id)
+    if not game_state:
+        raise HTTPException(status_code=404, detail="游戏会话不存在")
+
+    if game_state.game_over:
+        raise HTTPException(status_code=400, detail="游戏已结束")
+
+    current_chapter_id = game_state.current_chapter
+
+    # 记录提前结束
+    game_state.add_dialogue(
+        speaker="system",
+        content=f"君主选择提前结束关卡，未处理的影响将在后续关卡中体现。"
+    )
+
+    # 计算当前状态判定是否算通关
+    victory = game_state.power.authority > 30 and game_state.power.love > 20
+
+    if victory:
+        score = int(game_state.power.authority + game_state.power.love - game_state.power.fear * 0.5)
+        # 未处理的影响会扣分
+        penalty = len(request.pending_consequences) * 5
+        score = max(0, score - penalty)
+        game_state.complete_chapter("early_exit", score)
+    else:
+        game_state.fail_chapter("提前结束时权力状态不足")
+
+    # 获取下一关信息
+    next_chapter = None
+    if victory:
+        next_chapter = ChapterLibrary.get_next_chapter(ChapterID(current_chapter_id))
+
+    await session_store.set(request.session_id, game_state)
+
+    return {
+        "success": True,
+        "chapter_ended": True,
+        "victory": victory,
+        "reason": "提前结束关卡" + ("，未处理影响已累积" if request.pending_consequences else ""),
+        "pending_consequences_count": len(request.pending_consequences),
+        "next_chapter_available": {
+            "id": next_chapter.value,
+            "name": ChapterLibrary.get_chapter(next_chapter).name,
+        } if next_chapter else None,
         "state": game_state.to_summary(),
     }
 
