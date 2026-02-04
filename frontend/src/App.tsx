@@ -248,6 +248,7 @@ function App() {
           onModelChange={setModel}
           onExit={exitToSetup}
           pendingConsequences={pendingConsequences}
+          onNewGame={startNewGame}
         />
       ) : (
         <>

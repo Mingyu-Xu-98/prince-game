@@ -240,8 +240,17 @@ export interface DecreeConsequence {
   severity: 'low' | 'medium' | 'high' | 'critical';
   type: 'political' | 'economic' | 'military' | 'social' | 'diplomatic';
   potential_outcomes: string[];
-  requires_action: boolean;
-  deadline_turns?: number;  // 如果不处理，几回合后会自动触发
+  requires_action: boolean;           // 是否必须处理
+  deadline_turns?: number;            // 剩余回合数，超时自动触发
+  auto_trigger_effect?: string;       // 超时自动触发的效果描述
+  unresolved_penalty?: {              // 不处理时每回合的惩罚
+    authority?: number;
+    fear?: number;
+    love?: number;
+    credit?: number;
+  };
+  resolved?: boolean;                 // 是否已被处理
+  resolution_turn?: number;           // 在哪个回合被处理
 }
 
 // 累积的未处理影响（会影响后续关卡）
@@ -250,6 +259,26 @@ export interface PendingConsequence {
   source_turn: number;
   consequence: DecreeConsequence;
   turns_remaining?: number;
+}
+
+// 把柄使用结果
+export interface LeverageUsedResult {
+  advisor: string;
+  advisor_name: string;
+  leverage_type: string;
+  description: string;
+  impact: {
+    authority?: number;
+    fear?: number;
+    love?: number;
+  };
+  narrative: string;
+}
+
+// 关卡结果扩展
+export interface ChapterResultExtended extends ChapterResult {
+  triggered_by?: string;  // 触发原因: authority_zero, love_zero, assassination, credit_bankruptcy, betrayal, balance_failure
+  betrayer?: string;      // 如果是背叛触发，记录背叛者
 }
 
 export interface DecisionResult {
@@ -261,7 +290,7 @@ export interface DecisionResult {
     love: number;
   };
   new_state: GameState;
-  chapter_result: ChapterResult;
+  chapter_result: ChapterResultExtended;
   advisor_responses: {
     lion: string;
     fox: string;
@@ -293,6 +322,33 @@ export interface DecisionResult {
   // 因果系统更新
   causal_update?: NewSeedFromDecision;
   triggered_echoes?: TriggeredEcho[];
+
+  // 把柄系统
+  leverage_used?: LeverageUsedResult;
+
+  // 信用系统
+  credit_warning?: string;
+
+  // 危机系统
+  resolved_crises?: string[];           // 本回合解决的危机
+  triggered_crises?: string[];          // 自动触发的危机
+  active_crises?: ActiveCrisis[];       // 当前活动危机
+  overdue_warning?: string[];           // 即将超时的危机
+}
+
+// 活动危机
+export interface ActiveCrisis {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  type: string;
+  requires_action: boolean;
+  deadline_turns: number;
+  auto_trigger_effect?: string;
+  created_turn: number;
+  created_chapter: string;
+  resolved: boolean;
 }
 
 export interface FinalAudit {

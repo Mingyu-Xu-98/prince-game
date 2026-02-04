@@ -271,6 +271,124 @@ class GameState(BaseModel):
     # 因果系统
     causal_state: CausalState = Field(default_factory=CausalState)
 
+    # 待处理危机列表
+    pending_crises: list[dict] = Field(default_factory=list)
+
+    # ==================== 危机处理系统 ====================
+
+    def add_crisis(
+        self,
+        crisis_id: str,
+        title: str,
+        description: str,
+        severity: str,  # low, medium, high, critical
+        crisis_type: str,  # political, economic, military, social, diplomatic
+        requires_action: bool,
+        deadline_turns: int = 3,
+        auto_trigger_effect: str = None,
+        unresolved_penalty: dict = None,
+    ) -> dict:
+        """添加一个危机到待处理列表"""
+        crisis = {
+            "id": crisis_id,
+            "title": title,
+            "description": description,
+            "severity": severity,
+            "type": crisis_type,
+            "requires_action": requires_action,
+            "deadline_turns": deadline_turns,
+            "auto_trigger_effect": auto_trigger_effect or f"{title}失控，局势恶化",
+            "unresolved_penalty": unresolved_penalty or {"authority": -2, "love": -3},
+            "created_turn": self.total_turn,
+            "created_chapter": self.current_chapter,
+            "resolved": False,
+            "resolution_turn": None,
+        }
+        self.pending_crises.append(crisis)
+        return crisis
+
+    def resolve_crisis(self, crisis_id: str) -> bool:
+        """标记危机为已解决"""
+        for crisis in self.pending_crises:
+            if crisis["id"] == crisis_id and not crisis["resolved"]:
+                crisis["resolved"] = True
+                crisis["resolution_turn"] = self.total_turn
+                return True
+        return False
+
+    def tick_crises(self) -> list[dict]:
+        """每回合更新危机状态，返回触发的危机"""
+        triggered = []
+        for crisis in self.pending_crises:
+            if crisis["resolved"]:
+                continue
+
+            # 减少剩余回合数
+            if crisis.get("deadline_turns") is not None:
+                crisis["deadline_turns"] -= 1
+
+                # 超时触发
+                if crisis["deadline_turns"] <= 0:
+                    triggered.append(crisis)
+                    crisis["resolved"] = True  # 标记为已处理（以触发方式）
+                    crisis["resolution_turn"] = self.total_turn
+                    crisis["triggered_auto"] = True
+
+            # 未处理的惩罚（每回合累积）
+            if not crisis["resolved"] and crisis.get("unresolved_penalty"):
+                penalty = crisis["unresolved_penalty"]
+                self.power = self.power.apply_delta(
+                    delta_a=penalty.get("authority", 0),
+                    delta_l=penalty.get("love", 0),
+                    delta_f=penalty.get("fear", 0),
+                )
+                if penalty.get("credit"):
+                    self.credit_score = max(0, self.credit_score + penalty["credit"])
+
+        return triggered
+
+    def get_active_crises(self) -> list[dict]:
+        """获取所有未解决的危机"""
+        return [c for c in self.pending_crises if not c["resolved"]]
+
+    def get_critical_crises(self) -> list[dict]:
+        """获取必须处理的危机（critical severity 或 requires_action）"""
+        return [
+            c for c in self.pending_crises
+            if not c["resolved"] and (c["severity"] == "critical" or c["requires_action"])
+        ]
+
+    def get_overdue_crises(self) -> list[dict]:
+        """获取即将超时的危机（剩余1回合）"""
+        return [
+            c for c in self.pending_crises
+            if not c["resolved"] and c.get("deadline_turns") == 1
+        ]
+
+    def carry_over_crises_to_next_chapter(self) -> list[dict]:
+        """将未解决的危机带到下一关（恶化）"""
+        carried = []
+        for crisis in self.pending_crises:
+            if not crisis["resolved"]:
+                # 危机恶化
+                severity_escalation = {
+                    "low": "medium",
+                    "medium": "high",
+                    "high": "critical",
+                    "critical": "critical",
+                }
+                crisis["severity"] = severity_escalation.get(crisis["severity"], crisis["severity"])
+                crisis["description"] += "（由于拖延，情况恶化）"
+
+                # 惩罚加重
+                if crisis.get("unresolved_penalty"):
+                    for key in crisis["unresolved_penalty"]:
+                        crisis["unresolved_penalty"][key] = int(crisis["unresolved_penalty"][key] * 1.5)
+
+                carried.append(crisis)
+
+        return carried
+
     # ==================== 承诺系统 ====================
 
     def make_promise(

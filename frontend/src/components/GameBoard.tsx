@@ -19,7 +19,6 @@ interface GameBoardProps {
   onNextChapter?: () => Promise<void>;
   onSkipConsequences?: (consequences: DecreeConsequence[]) => void;
   onContinueWithConsequences?: (consequences: DecreeConsequence[]) => void;
-  onEndChapterEarly?: (pendingConsequences: DecreeConsequence[]) => void;
   onUpdateGameState?: (state: GameState) => void;
 }
 
@@ -50,7 +49,6 @@ export function GameBoard({
   onNextChapter,
   onSkipConsequences,
   onContinueWithConsequences,
-  onEndChapterEarly: _onEndChapterEarly, // 保留但标记为未使用（将来可能用于父组件回调）
   onUpdateGameState,
 }: GameBoardProps) {
   const [gameMode, setGameMode] = useState<GameMode>('council');
@@ -85,10 +83,6 @@ export function GameBoard({
   // 廷议气氛状态（用于未来的 UI 增强）
   // @ts-ignore - 保留供未来使用
   const [councilAtmosphere, setCouncilAtmosphere] = useState<string>('neutral');
-
-  // 提前结束关卡确认弹窗
-  const [showEndChapterConfirm, setShowEndChapterConfirm] = useState(false);
-  const [endingChapter, setEndingChapter] = useState(false);
 
   // 正在加载下一关
   const [loadingNextChapter, setLoadingNextChapter] = useState(false);
@@ -219,6 +213,27 @@ export function GameBoard({
         // 后端会返回 decree_consequences，由 AI 基于《君主论》原则分析生成
         setLastResult(result);
         setGameMode('decree_result');
+
+        // 记录本回合的更新（局势变化、新问题等）
+        const turnUpdate: TurnUpdate = {
+          turn: result.turn,
+          consequences: result.decree_consequences,
+          leverageUsed: result.leverage_used ? {
+            advisor: result.leverage_used.advisor_name,
+            narrative: result.leverage_used.narrative,
+          } : undefined,
+          creditWarning: result.credit_warning,
+        };
+
+        // 如果有场景更新，记录局势变化
+        if (sceneUpdate) {
+          turnUpdate.sceneChange = sceneUpdate;
+        }
+        if (newDilemma) {
+          turnUpdate.newProblem = newDilemma;
+        }
+
+        setTurnUpdates(prev => [...prev, turnUpdate]);
       }
     } finally {
       setDecreeLoading(false);
@@ -280,6 +295,23 @@ export function GameBoard({
   const [sceneUpdate, setSceneUpdate] = useState<string>('');
   const [newDilemma, setNewDilemma] = useState<string>('');
   const [newAdvisorComments, setNewAdvisorComments] = useState<Record<string, { stance: string; comment: string; suggestion?: string }>>({});
+
+  // 局势变化历史（每回合累积）
+  interface TurnUpdate {
+    turn: number;
+    sceneChange?: string;       // 局势变化
+    newProblem?: string;        // 新的问题
+    consequences?: DecreeConsequence[];  // 政令后果
+    leverageUsed?: {            // 把柄使用
+      advisor: string;
+      narrative: string;
+    };
+    creditWarning?: string;     // 信用警告
+  }
+  const [turnUpdates, setTurnUpdates] = useState<TurnUpdate[]>([]);
+
+  // 回合总结展开状态
+  const [expandedTurnSummary, setExpandedTurnSummary] = useState<number | null>(null);
 
   // 进入下一个场景（继续处理影响）
   const handleNextScene = async () => {
@@ -346,53 +378,6 @@ export function GameBoard({
     setLastResult(null);
     setGameMode('council');
     setCouncilMessages([]);  // 清空之前的廷议对话
-  };
-
-  // 提前结束关卡
-  const handleEndChapterEarly = async () => {
-    if (!sessionId || !apiKey) {
-      setShowEndChapterConfirm(false);
-      return;
-    }
-
-    setEndingChapter(true);
-
-    try {
-      // 收集所有未处理的后果
-      const allPendingConsequences = [
-        ...activeConsequences,
-        ...(lastResult?.decree_consequences || []),
-      ];
-
-      const result = await gameApi.endChapterEarly(
-        sessionId,
-        allPendingConsequences,
-        apiKey,
-        model
-      );
-
-      if (result.success) {
-        // 更新游戏状态
-        if (onUpdateGameState && result.state) {
-          onUpdateGameState(result.state);
-        }
-
-        // 通知父组件跳过后果
-        if (onSkipConsequences && allPendingConsequences.length > 0) {
-          onSkipConsequences(allPendingConsequences);
-        }
-
-        // 如果有下一关，进入下一关
-        if (result.next_chapter_available && onNextChapter) {
-          onNextChapter();
-        }
-      }
-    } catch (error) {
-      console.error('提前结束关卡失败:', error);
-    } finally {
-      setEndingChapter(false);
-      setShowEndChapterConfirm(false);
-    }
   };
 
   // 过滤对话历史
@@ -474,27 +459,6 @@ export function GameBoard({
           <span style={{ color: theme.text.muted, fontSize: '12px' }}>与顾问讨论后发布政令</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* 提前结束关卡按钮 */}
-          <button
-            onClick={() => setShowEndChapterConfirm(true)}
-            disabled={isLoading || gameState.game_over}
-            style={{
-              padding: '10px 16px',
-              background: 'transparent',
-              color: theme.text.secondary,
-              border: `1px solid ${theme.border.medium}`,
-              borderRadius: '8px',
-              fontSize: '13px',
-              cursor: isLoading || gameState.game_over ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.2s',
-            }}
-            title="提前结束当前关卡，进入下一关（未处理的影响将累积）"
-          >
-            ⏭️ 结束关卡
-          </button>
           <button
             onClick={() => setShowDecreeModal(true)}
             disabled={isLoading || gameState.game_over}
@@ -520,287 +484,164 @@ export function GameBoard({
         </div>
       </div>
 
-      {/* 廷议对话区 */}
+      {/* 廷议对话区 - 重新设计的清晰布局 */}
       <div style={{
         flex: 1,
-        overflowY: 'auto',
-        padding: '20px',
-        paddingRight: '100px',
+        display: 'flex',
+        flexDirection: 'column',
         backgroundColor: theme.bg.secondary,
+        overflow: 'hidden',
       }}>
-        {/* 当前正在处理的后果提示 */}
-        {activeConsequences.length > 0 && (
+        {/* 顶部固定区 - 紧急事项和局势变化 */}
+        {(activeConsequences.length > 0 || sceneUpdate || Object.keys(newAdvisorComments).length > 0) && (
           <div style={{
-            marginBottom: '20px',
-            padding: '16px',
-            backgroundColor: '#FFF7ED',
-            borderRadius: '12px',
-            border: '1px solid #FDBA7440',
+            padding: '12px 20px',
+            paddingRight: '100px',
+            backgroundColor: '#FFFBEB',
+            borderBottom: '1px solid #FDE68A',
+            maxHeight: '180px',
+            overflowY: 'auto',
           }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '12px',
-            }}>
-              <span style={{ fontSize: '18px' }}>🌊</span>
-              <span style={{ color: '#C2410C', fontWeight: 'bold', fontSize: '14px' }}>
-                正在处理政令后续影响
-              </span>
-              <button
-                onClick={() => setActiveConsequences([])}
-                style={{
-                  marginLeft: 'auto',
-                  padding: '4px 8px',
-                  backgroundColor: 'transparent',
-                  border: '1px solid #FDBA74',
-                  borderRadius: '4px',
-                  color: '#C2410C',
-                  fontSize: '11px',
-                  cursor: 'pointer',
-                }}
-              >
-                清除
-              </button>
+            {/* 紧急危机标签 */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+              {activeConsequences.filter(c => c.requires_action).length > 0 && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '4px 10px',
+                  backgroundColor: '#FEE2E2',
+                  borderRadius: '16px',
+                  border: '1px solid #FECACA',
+                }}>
+                  <span style={{ fontSize: '12px' }}>🚨</span>
+                  <span style={{ color: '#DC2626', fontSize: '11px', fontWeight: 'bold' }}>
+                    {activeConsequences.filter(c => c.requires_action).length} 项紧急事务
+                  </span>
+                </div>
+              )}
+
+              {sceneUpdate && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '4px 10px',
+                  backgroundColor: '#DBEAFE',
+                  borderRadius: '16px',
+                  border: '1px solid #BFDBFE',
+                }}>
+                  <span style={{ fontSize: '12px' }}>🎭</span>
+                  <span style={{ color: '#1E40AF', fontSize: '11px', fontWeight: 'bold' }}>局势已变化</span>
+                </div>
+              )}
+
+              {Object.keys(newAdvisorComments).length > 0 && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '4px 10px',
+                  backgroundColor: '#FEF3C7',
+                  borderRadius: '16px',
+                  border: '1px solid #FDE68A',
+                }}>
+                  <span style={{ fontSize: '12px' }}>💬</span>
+                  <span style={{ color: '#B45309', fontSize: '11px', fontWeight: 'bold' }}>顾问有新反馈</span>
+                </div>
+              )}
+
+              {activeConsequences.length > 0 && (
+                <button
+                  onClick={() => {
+                    setActiveConsequences([]);
+                    setSceneUpdate('');
+                    setNewAdvisorComments({});
+                  }}
+                  style={{
+                    marginLeft: 'auto',
+                    padding: '3px 8px',
+                    backgroundColor: 'transparent',
+                    border: '1px solid #D1D5DB',
+                    borderRadius: '4px',
+                    color: theme.text.muted,
+                    fontSize: '10px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  全部清除
+                </button>
+              )}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {activeConsequences.map((c, idx) => {
-                const severityInfo = getSeverityInfo(c.severity);
-                return (
-                  <div key={c.id || idx} style={{
-                    padding: '10px 12px',
+
+            {/* 展开的详情 */}
+            {sceneUpdate && (
+              <div style={{ marginTop: '10px', padding: '8px 12px', backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '12px', color: '#1E40AF', fontWeight: 'bold', marginBottom: '4px' }}>📍 局势变化</div>
+                <div style={{ fontSize: '12px', color: theme.text.secondary, lineHeight: '1.5' }}>{sceneUpdate}</div>
+                {newDilemma && (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#C2410C' }}>
+                    ⚡ 新问题：{newDilemma}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 顾问反馈摘要 */}
+            {Object.keys(newAdvisorComments).length > 0 && (
+              <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {newAdvisorComments.lion && (
+                  <div style={{
+                    flex: '1 1 150px',
+                    padding: '8px 10px',
                     backgroundColor: 'rgba(255,255,255,0.6)',
-                    borderRadius: '6px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
+                    borderRadius: '8px',
+                    borderLeft: `3px solid ${theme.advisor.lion}`,
                   }}>
-                    <span style={{ fontSize: '14px' }}>{getTypeIcon(c.type)}</span>
-                    <span style={{ color: severityInfo.color, fontWeight: 'bold', fontSize: '13px' }}>
-                      {c.title}
-                    </span>
-                    <span style={{
-                      fontSize: '10px',
-                      padding: '2px 6px',
-                      backgroundColor: severityInfo.color,
-                      color: '#FFF',
-                      borderRadius: '3px',
-                    }}>
-                      {severityInfo.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{
-              marginTop: '12px',
-              fontSize: '12px',
-              color: theme.text.muted,
-            }}>
-              💡 请针对这些影响与顾问讨论，然后发布新政令来应对
-            </div>
-          </div>
-        )}
-
-        {/* 场景更新提示（来自继续回合） */}
-        {sceneUpdate && (
-          <div style={{
-            marginBottom: '20px',
-            padding: '16px',
-            backgroundColor: '#EBF4FF',
-            borderRadius: '12px',
-            border: '1px solid #93C5FD40',
-          }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '10px',
-            }}>
-              <span style={{ fontSize: '18px' }}>🎭</span>
-              <span style={{ color: '#1E40AF', fontWeight: 'bold', fontSize: '14px' }}>
-                局势变化
-              </span>
-              <button
-                onClick={() => setSceneUpdate('')}
-                style={{
-                  marginLeft: 'auto',
-                  padding: '4px 8px',
-                  backgroundColor: 'transparent',
-                  border: '1px solid #93C5FD',
-                  borderRadius: '4px',
-                  color: '#1E40AF',
-                  fontSize: '11px',
-                  cursor: 'pointer',
-                }}
-              >
-                关闭
-              </button>
-            </div>
-            <p style={{
-              color: theme.text.secondary,
-              fontSize: '14px',
-              lineHeight: '1.7',
-              margin: 0,
-            }}>
-              {sceneUpdate}
-            </p>
-            {newDilemma && (
-              <div style={{
-                marginTop: '12px',
-                padding: '10px 12px',
-                backgroundColor: 'rgba(255,255,255,0.6)',
-                borderRadius: '6px',
-                border: '1px solid #93C5FD30',
-              }}>
-                <div style={{ fontSize: '12px', color: '#1E40AF', marginBottom: '4px', fontWeight: 'bold' }}>
-                  📋 新的问题
-                </div>
-                <div style={{ fontSize: '13px', color: theme.text.secondary }}>
-                  {newDilemma}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 顾问针对上轮政令的新观点（来自继续回合） */}
-        {Object.keys(newAdvisorComments).length > 0 && (
-          <div style={{
-            marginBottom: '24px',
-            padding: '20px',
-            backgroundColor: '#FEF3C7',
-            borderRadius: '12px',
-            border: `1px solid ${theme.accent.gold}30`,
-            boxShadow: theme.shadow.sm,
-          }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '16px',
-            }}>
-              <span style={{ fontSize: '16px' }}>💬</span>
-              <span style={{ color: theme.accent.goldDark, fontWeight: 'bold', fontSize: '14px' }}>
-                顾问们对上轮政令的反馈
-              </span>
-              <button
-                onClick={() => setNewAdvisorComments({})}
-                style={{
-                  marginLeft: 'auto',
-                  padding: '4px 8px',
-                  backgroundColor: 'transparent',
-                  border: `1px solid ${theme.accent.gold}`,
-                  borderRadius: '4px',
-                  color: theme.accent.goldDark,
-                  fontSize: '11px',
-                  cursor: 'pointer',
-                }}
-              >
-                关闭
-              </button>
-            </div>
-
-            {newAdvisorComments.lion && (
-              <div style={{ marginBottom: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '18px' }}>🦁</span>
-                  <span style={{ color: theme.advisor.lion, fontWeight: 'bold', fontSize: '13px' }}>狮子</span>
-                  {newAdvisorComments.lion.stance && (
-                    <span style={{
-                      fontSize: '10px',
-                      padding: '2px 6px',
-                      backgroundColor: newAdvisorComments.lion.stance === '支持' ? '#D1FAE5' :
-                        newAdvisorComments.lion.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
-                      color: newAdvisorComments.lion.stance === '支持' ? '#059669' :
-                        newAdvisorComments.lion.stance === '反对' ? '#DC2626' : '#6B7280',
-                      borderRadius: '3px',
-                    }}>
-                      {newAdvisorComments.lion.stance}
-                    </span>
-                  )}
-                </div>
-                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
-                  "{newAdvisorComments.lion.comment}"
-                </div>
-                {newAdvisorComments.lion.suggestion && (
-                  <div style={{
-                    marginTop: '6px',
-                    paddingLeft: '26px',
-                    fontSize: '12px',
-                    color: theme.advisor.lion,
-                  }}>
-                    💡 {newAdvisorComments.lion.suggestion}
+                    <div style={{ fontSize: '11px', color: theme.advisor.lion, fontWeight: 'bold', marginBottom: '2px' }}>
+                      🦁 狮子 {newAdvisorComments.lion.stance && `· ${newAdvisorComments.lion.stance}`}
+                    </div>
+                    <div style={{ fontSize: '11px', color: theme.text.secondary, lineHeight: '1.4' }}>
+                      {newAdvisorComments.lion.comment.length > 40
+                        ? newAdvisorComments.lion.comment.substring(0, 40) + '...'
+                        : newAdvisorComments.lion.comment}
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
-
-            {newAdvisorComments.fox && (
-              <div style={{ marginBottom: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '18px' }}>🦊</span>
-                  <span style={{ color: theme.advisor.fox, fontWeight: 'bold', fontSize: '13px' }}>狐狸</span>
-                  {newAdvisorComments.fox.stance && (
-                    <span style={{
-                      fontSize: '10px',
-                      padding: '2px 6px',
-                      backgroundColor: newAdvisorComments.fox.stance === '支持' ? '#D1FAE5' :
-                        newAdvisorComments.fox.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
-                      color: newAdvisorComments.fox.stance === '支持' ? '#059669' :
-                        newAdvisorComments.fox.stance === '反对' ? '#DC2626' : '#6B7280',
-                      borderRadius: '3px',
-                    }}>
-                      {newAdvisorComments.fox.stance}
-                    </span>
-                  )}
-                </div>
-                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
-                  "{newAdvisorComments.fox.comment}"
-                </div>
-                {newAdvisorComments.fox.suggestion && (
+                {newAdvisorComments.fox && (
                   <div style={{
-                    marginTop: '6px',
-                    paddingLeft: '26px',
-                    fontSize: '12px',
-                    color: theme.advisor.fox,
+                    flex: '1 1 150px',
+                    padding: '8px 10px',
+                    backgroundColor: 'rgba(255,255,255,0.6)',
+                    borderRadius: '8px',
+                    borderLeft: `3px solid ${theme.advisor.fox}`,
                   }}>
-                    💡 {newAdvisorComments.fox.suggestion}
+                    <div style={{ fontSize: '11px', color: theme.advisor.fox, fontWeight: 'bold', marginBottom: '2px' }}>
+                      🦊 狐狸 {newAdvisorComments.fox.stance && `· ${newAdvisorComments.fox.stance}`}
+                    </div>
+                    <div style={{ fontSize: '11px', color: theme.text.secondary, lineHeight: '1.4' }}>
+                      {newAdvisorComments.fox.comment.length > 40
+                        ? newAdvisorComments.fox.comment.substring(0, 40) + '...'
+                        : newAdvisorComments.fox.comment}
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
-
-            {newAdvisorComments.balance && (
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '18px' }}>⚖️</span>
-                  <span style={{ color: theme.advisor.balance, fontWeight: 'bold', fontSize: '13px' }}>天平</span>
-                  {newAdvisorComments.balance.stance && (
-                    <span style={{
-                      fontSize: '10px',
-                      padding: '2px 6px',
-                      backgroundColor: newAdvisorComments.balance.stance === '支持' ? '#D1FAE5' :
-                        newAdvisorComments.balance.stance === '反对' ? '#FEE2E2' : '#F3F4F6',
-                      color: newAdvisorComments.balance.stance === '支持' ? '#059669' :
-                        newAdvisorComments.balance.stance === '反对' ? '#DC2626' : '#6B7280',
-                      borderRadius: '3px',
-                    }}>
-                      {newAdvisorComments.balance.stance}
-                    </span>
-                  )}
-                </div>
-                <div style={{ color: theme.text.secondary, fontSize: '13px', lineHeight: '1.6', paddingLeft: '26px' }}>
-                  "{newAdvisorComments.balance.comment}"
-                </div>
-                {newAdvisorComments.balance.suggestion && (
+                {newAdvisorComments.balance && (
                   <div style={{
-                    marginTop: '6px',
-                    paddingLeft: '26px',
-                    fontSize: '12px',
-                    color: theme.advisor.balance,
+                    flex: '1 1 150px',
+                    padding: '8px 10px',
+                    backgroundColor: 'rgba(255,255,255,0.6)',
+                    borderRadius: '8px',
+                    borderLeft: `3px solid ${theme.advisor.balance}`,
                   }}>
-                    💡 {newAdvisorComments.balance.suggestion}
+                    <div style={{ fontSize: '11px', color: theme.advisor.balance, fontWeight: 'bold', marginBottom: '2px' }}>
+                      ⚖️ 天平 {newAdvisorComments.balance.stance && `· ${newAdvisorComments.balance.stance}`}
+                    </div>
+                    <div style={{ fontSize: '11px', color: theme.text.secondary, lineHeight: '1.4' }}>
+                      {newAdvisorComments.balance.comment.length > 40
+                        ? newAdvisorComments.balance.comment.substring(0, 40) + '...'
+                        : newAdvisorComments.balance.comment}
+                    </div>
                   </div>
                 )}
               </div>
@@ -808,7 +649,14 @@ export function GameBoard({
           </div>
         )}
 
-        {/* 顾问建议（初始建议） */}
+        {/* 主对话区域 */}
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '20px',
+          paddingRight: '100px',
+        }}>
+          {/* 顾问建议（初始建议） */}
         {councilDebate && !sceneUpdate && Object.keys(newAdvisorComments).length === 0 && (
           <div style={{
             marginBottom: '24px',
@@ -946,6 +794,185 @@ export function GameBoard({
           );
         })}
 
+        {/* 回合总结 - 折叠式设计 */}
+        {turnUpdates.length > 0 && (
+          <div style={{
+            margin: '16px 0',
+            backgroundColor: '#F9FAFB',
+            borderRadius: '8px',
+            border: '1px solid #E5E7EB',
+          }}>
+            {/* 总结标题栏 */}
+            <div style={{
+              padding: '10px 14px',
+              backgroundColor: '#F3F4F6',
+              borderRadius: '8px 8px 0 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}>
+              <span style={{ fontSize: '14px' }}>📋</span>
+              <span style={{ color: theme.text.secondary, fontWeight: 'bold', fontSize: '12px' }}>
+                历史回合记录
+              </span>
+              <span style={{ fontSize: '11px', color: theme.text.muted }}>
+                ({turnUpdates.length} 回合)
+              </span>
+            </div>
+
+            {/* 回合列表 */}
+            <div style={{ padding: '8px' }}>
+              {turnUpdates.map((update, updateIdx) => {
+                const isExpanded = expandedTurnSummary === update.turn;
+                const hasConsequences = update.consequences && update.consequences.length > 0;
+                const hasLeverage = !!update.leverageUsed;
+                const hasWarning = !!update.creditWarning;
+
+                return (
+                  <div key={`turn-summary-${updateIdx}`} style={{
+                    marginBottom: '4px',
+                    backgroundColor: isExpanded ? '#FFFBEB' : 'white',
+                    borderRadius: '6px',
+                    border: isExpanded ? '1px solid #FCD34D' : '1px solid #E5E7EB',
+                    overflow: 'hidden',
+                  }}>
+                    {/* 折叠标题 */}
+                    <div
+                      onClick={() => setExpandedTurnSummary(isExpanded ? null : update.turn)}
+                      style={{
+                        padding: '8px 12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        cursor: 'pointer',
+                        backgroundColor: isExpanded ? '#FEF3C7' : 'transparent',
+                      }}
+                    >
+                      <span style={{
+                        fontSize: '10px',
+                        color: theme.text.muted,
+                        transition: 'transform 0.2s',
+                        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                      }}>
+                        ▶
+                      </span>
+                      <span style={{ fontWeight: 'bold', fontSize: '11px', color: '#B45309' }}>
+                        第 {update.turn} 回合
+                      </span>
+                      {/* 摘要标签 */}
+                      <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto' }}>
+                        {hasConsequences && (
+                          <span style={{
+                            fontSize: '10px',
+                            padding: '2px 6px',
+                            backgroundColor: '#FED7AA',
+                            color: '#C2410C',
+                            borderRadius: '10px',
+                          }}>
+                            {update.consequences!.length} 影响
+                          </span>
+                        )}
+                        {hasLeverage && (
+                          <span style={{
+                            fontSize: '10px',
+                            padding: '2px 6px',
+                            backgroundColor: '#FECACA',
+                            color: '#DC2626',
+                            borderRadius: '10px',
+                          }}>
+                            把柄
+                          </span>
+                        )}
+                        {hasWarning && (
+                          <span style={{
+                            fontSize: '10px',
+                            padding: '2px 6px',
+                            backgroundColor: '#FEF3C7',
+                            color: '#B45309',
+                            borderRadius: '10px',
+                          }}>
+                            警告
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 展开内容 */}
+                    {isExpanded && (
+                      <div style={{ padding: '12px', borderTop: '1px solid #FDE68A' }}>
+                        {/* 政令后续影响 */}
+                        {hasConsequences && (
+                          <div style={{ marginBottom: '10px' }}>
+                            <div style={{ fontSize: '11px', color: '#C2410C', fontWeight: 'bold', marginBottom: '6px' }}>
+                              🌊 政令后续影响
+                            </div>
+                            {update.consequences!.map((c, idx) => {
+                              const severityInfo = getSeverityInfo(c.severity);
+                              return (
+                                <div key={idx} style={{
+                                  padding: '8px 10px',
+                                  marginBottom: '4px',
+                                  backgroundColor: 'white',
+                                  borderRadius: '6px',
+                                  borderLeft: `3px solid ${severityInfo.color}`,
+                                  fontSize: '11px',
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                                    <span>{getTypeIcon(c.type)}</span>
+                                    <span style={{ fontWeight: 'bold', color: severityInfo.color }}>{c.title}</span>
+                                    <span style={{
+                                      fontSize: '9px',
+                                      padding: '1px 4px',
+                                      backgroundColor: severityInfo.color,
+                                      color: '#FFF',
+                                      borderRadius: '2px',
+                                    }}>
+                                      {severityInfo.label}
+                                    </span>
+                                  </div>
+                                  <div style={{ color: theme.text.muted, lineHeight: '1.4' }}>
+                                    {c.description.length > 80 ? c.description.substring(0, 80) + '...' : c.description}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* 把柄使用 */}
+                        {hasLeverage && (
+                          <div style={{
+                            padding: '8px 10px',
+                            backgroundColor: '#FEE2E2',
+                            borderRadius: '6px',
+                            marginBottom: '6px',
+                            fontSize: '11px',
+                          }}>
+                            <span style={{ color: '#DC2626', fontWeight: 'bold' }}>🗡️ 把柄被使用：</span>
+                            <span style={{ color: '#991B1B', marginLeft: '4px' }}>{update.leverageUsed!.narrative}</span>
+                          </div>
+                        )}
+
+                        {/* 信用警告 */}
+                        {hasWarning && (
+                          <div style={{
+                            padding: '8px 10px',
+                            backgroundColor: '#FEF3C7',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                          }}>
+                            <span style={{ color: '#B45309' }}>⚠️ {update.creditWarning}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {(isLoading || councilLoading) && (
           <div style={{ textAlign: 'center', color: theme.text.muted, padding: '20px' }}>
             <span>顾问们正在思考...</span>
@@ -953,6 +980,7 @@ export function GameBoard({
         )}
 
         <div ref={historyEndRef} />
+        </div>
       </div>
 
       {renderAdvisorAvatars()}
@@ -1225,6 +1253,9 @@ export function GameBoard({
     setInput('');
     setDecreeInput('');
     setShowDecreeModal(false);
+    // 清除关卡历史记录（不携带到下一关）
+    setTurnUpdates([]);
+    setExpandedTurnSummary(null);
   };
 
   // 处理跳过后续影响，直接进入下一关
@@ -1732,6 +1763,66 @@ export function GameBoard({
           </div>
         )}
 
+        {/* 局势变化历史 */}
+        {turnUpdates.filter(u => u.sceneChange).length > 0 && (
+          <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}`, backgroundColor: '#F0FDF4' }}>
+            <h4 style={{ color: '#166534', fontSize: '12px', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              🔄 局势变化
+              <span style={{ fontSize: '10px', fontWeight: 'normal', color: theme.text.muted }}>
+                ({turnUpdates.filter(u => u.sceneChange).length})
+              </span>
+            </h4>
+            <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+              {turnUpdates.filter(u => u.sceneChange).map((update, idx) => (
+                <div key={idx} style={{
+                  padding: '8px 10px',
+                  marginBottom: '6px',
+                  backgroundColor: 'rgba(255,255,255,0.7)',
+                  borderRadius: '6px',
+                  borderLeft: '3px solid #22C55E',
+                }}>
+                  <div style={{ fontSize: '10px', color: theme.text.muted, marginBottom: '4px' }}>
+                    第 {update.turn} 回合
+                  </div>
+                  <div style={{ fontSize: '11px', color: theme.text.secondary, lineHeight: '1.5' }}>
+                    {update.sceneChange}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 新问题/挑战历史 */}
+        {turnUpdates.filter(u => u.newProblem).length > 0 && (
+          <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}`, backgroundColor: '#FEF2F2' }}>
+            <h4 style={{ color: '#991B1B', fontSize: '12px', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              ⚡ 衍生问题
+              <span style={{ fontSize: '10px', fontWeight: 'normal', color: theme.text.muted }}>
+                ({turnUpdates.filter(u => u.newProblem).length})
+              </span>
+            </h4>
+            <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+              {turnUpdates.filter(u => u.newProblem).map((update, idx) => (
+                <div key={idx} style={{
+                  padding: '8px 10px',
+                  marginBottom: '6px',
+                  backgroundColor: 'rgba(255,255,255,0.7)',
+                  borderRadius: '6px',
+                  borderLeft: '3px solid #EF4444',
+                }}>
+                  <div style={{ fontSize: '10px', color: theme.text.muted, marginBottom: '4px' }}>
+                    第 {update.turn} 回合
+                  </div>
+                  <div style={{ fontSize: '11px', color: theme.text.secondary, lineHeight: '1.5' }}>
+                    {update.newProblem}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 权力状态 */}
         <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border.light}` }}>
           <h4 style={{ color: theme.text.secondary, fontSize: '12px', margin: '0 0 12px 0' }}>⚔️ 权力状态</h4>
@@ -1822,6 +1913,216 @@ export function GameBoard({
             );
           })}
         </div>
+
+        {/* 即时状态标记 */}
+        {gameState.causal_state && gameState.causal_state.immediate_flags &&
+         gameState.causal_state.immediate_flags.length > 0 && (
+          <div style={{
+            padding: '12px 16px',
+            borderTop: `1px solid ${theme.border.light}`,
+            backgroundColor: '#FEF3C7',
+          }}>
+            <h4 style={{
+              color: '#B45309',
+              fontSize: '11px',
+              margin: '0 0 8px 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              ⚡ 当前状态效果
+              <span style={{
+                fontSize: '10px',
+                fontWeight: 'normal',
+                color: theme.text.muted,
+              }}>
+                （{gameState.causal_state.immediate_flags.length}）
+              </span>
+            </h4>
+            <div style={{ fontSize: '11px', color: theme.text.secondary }}>
+              {gameState.causal_state.immediate_flags.map((flag, idx) => {
+                const typeColors: Record<string, { bg: string; text: string }> = {
+                  BUFF: { bg: '#D1FAE5', text: '#059669' },
+                  DEBUFF: { bg: '#FEE2E2', text: '#DC2626' },
+                  MODIFIER: { bg: '#FEF3C7', text: '#B45309' },
+                };
+                const colors = typeColors[flag.type] || typeColors.MODIFIER;
+
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      marginBottom: '6px',
+                      padding: '6px 8px',
+                      backgroundColor: colors.bg,
+                      borderRadius: '4px',
+                      borderLeft: `3px solid ${colors.text}`,
+                    }}
+                  >
+                    <div style={{
+                      fontWeight: 'bold',
+                      fontSize: '10px',
+                      color: colors.text,
+                      marginBottom: '2px',
+                    }}>
+                      {flag.name}
+                      {flag.duration_turns && (
+                        <span style={{ fontWeight: 'normal', marginLeft: '4px' }}>
+                          (剩余 {flag.duration_turns} 回合)
+                        </span>
+                      )}
+                    </div>
+                    <div style={{
+                      fontSize: '10px',
+                      color: theme.text.muted,
+                    }}>
+                      {flag.effect_on_scene}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* 待处理危机 */}
+        {lastResult?.active_crises && lastResult.active_crises.length > 0 && (
+          <div style={{
+            padding: '12px 16px',
+            borderTop: `1px solid ${theme.border.light}`,
+            backgroundColor: '#FEF2F2',
+          }}>
+            <h4 style={{
+              color: '#DC2626',
+              fontSize: '11px',
+              margin: '0 0 8px 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              🚨 待处理危机
+              <span style={{
+                fontSize: '10px',
+                fontWeight: 'normal',
+                color: theme.text.muted,
+              }}>
+                （{lastResult.active_crises.length}）
+              </span>
+            </h4>
+            <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+              {lastResult.active_crises.map((crisis, idx) => {
+                const severityColors: Record<string, { bg: string; text: string; label: string }> = {
+                  low: { bg: '#DBEAFE', text: '#1E40AF', label: '轻微' },
+                  medium: { bg: '#FEF3C7', text: '#B45309', label: '中等' },
+                  high: { bg: '#FED7AA', text: '#C2410C', label: '严重' },
+                  critical: { bg: '#FECACA', text: '#DC2626', label: '紧急' },
+                };
+                const colors = severityColors[crisis.severity] || severityColors.medium;
+
+                return (
+                  <div key={idx} style={{
+                    padding: '8px 10px',
+                    marginBottom: '6px',
+                    backgroundColor: colors.bg,
+                    borderRadius: '6px',
+                    borderLeft: `3px solid ${colors.text}`,
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      marginBottom: '4px',
+                    }}>
+                      <span style={{
+                        fontSize: '10px',
+                        padding: '1px 4px',
+                        backgroundColor: colors.text,
+                        color: '#FFF',
+                        borderRadius: '3px',
+                        fontWeight: 'bold',
+                      }}>
+                        {colors.label}
+                      </span>
+                      <span style={{ fontWeight: 'bold', fontSize: '11px', color: colors.text }}>
+                        {crisis.title}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: theme.text.muted, marginBottom: '4px' }}>
+                      {crisis.description.length > 50
+                        ? crisis.description.substring(0, 50) + '...'
+                        : crisis.description}
+                    </div>
+                    {crisis.deadline_turns > 0 && (
+                      <div style={{
+                        fontSize: '10px',
+                        color: crisis.deadline_turns <= 1 ? '#DC2626' : '#B45309',
+                        fontWeight: crisis.deadline_turns <= 1 ? 'bold' : 'normal',
+                      }}>
+                        ⏰ 剩余 {crisis.deadline_turns} 回合
+                        {crisis.deadline_turns <= 1 && ' ⚠️ 即将触发！'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{
+              marginTop: '8px',
+              fontSize: '10px',
+              color: theme.text.muted,
+              padding: '6px 8px',
+              backgroundColor: 'rgba(255,255,255,0.5)',
+              borderRadius: '4px',
+            }}>
+              💡 在政令中直接应对危机即可解决
+            </div>
+          </div>
+        )}
+
+        {/* 系统警告 - 背叛风险/信用危机 */}
+        {(gameState.credit_score < 40 ||
+          Object.values(gameState.relations).some(r => r.loyalty < 30 && r.trust < 0)) && (
+          <div style={{
+            padding: '12px 16px',
+            borderTop: `1px solid ${theme.border.light}`,
+            backgroundColor: '#FEE2E2',
+          }}>
+            <h4 style={{
+              color: '#DC2626',
+              fontSize: '11px',
+              margin: '0 0 8px 0',
+            }}>
+              ⚠️ 其他警告
+            </h4>
+            <div style={{ fontSize: '11px', color: '#991B1B' }}>
+              {gameState.credit_score < 20 && (
+                <div style={{ marginBottom: '4px' }}>
+                  💔 信用破产：无人再相信你的承诺
+                </div>
+              )}
+              {gameState.credit_score >= 20 && gameState.credit_score < 40 && (
+                <div style={{ marginBottom: '4px' }}>
+                  📉 信用危机：顾问们对你的承诺持怀疑态度
+                </div>
+              )}
+              {Object.entries(gameState.relations).map(([advisor, relation]) => {
+                if (relation.loyalty < 30 && relation.trust < 0) {
+                  const advisorNames: Record<string, string> = {
+                    lion: '狮子',
+                    fox: '狐狸',
+                    balance: '天平'
+                  };
+                  return (
+                    <div key={advisor} style={{ marginBottom: '4px' }}>
+                      🗡️ {advisorNames[advisor]}可能背叛！(忠诚度: {relation.loyalty.toFixed(0)})
+                    </div>
+                  );
+                }
+                return null;
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 因果伏笔 - 潜伏的危机 */}
         {gameState.causal_state && gameState.causal_state.shadow_seeds &&
@@ -2213,136 +2514,6 @@ export function GameBoard({
         </div>
       )}
 
-      {/* 提前结束关卡确认弹窗 */}
-      {showEndChapterConfirm && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-        }}>
-          <div style={{
-            width: '450px',
-            backgroundColor: theme.bg.card,
-            borderRadius: '16px',
-            border: `2px solid ${theme.status.warning}`,
-            padding: '32px',
-            boxShadow: theme.shadow.lg,
-          }}>
-            <h2 style={{
-              color: theme.status.warning,
-              fontSize: '20px',
-              margin: '0 0 8px 0',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-            }}>
-              ⏭️ 提前结束关卡
-            </h2>
-            <p style={{ color: theme.text.secondary, fontSize: '14px', margin: '0 0 20px 0', lineHeight: '1.6' }}>
-              确定要提前结束当前关卡吗？
-            </p>
-
-            {/* 警告信息 */}
-            <div style={{
-              backgroundColor: '#FFF7ED',
-              borderRadius: '8px',
-              padding: '16px',
-              marginBottom: '20px',
-              border: '1px solid #FDBA7440',
-            }}>
-              <div style={{ fontSize: '13px', color: '#C2410C', lineHeight: '1.6' }}>
-                <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>⚠️ 注意事项：</div>
-                <ul style={{ margin: 0, paddingLeft: '20px' }}>
-                  <li>未处理的政令影响将会累积到后续关卡</li>
-                  <li>累积的影响可能会以更严重的形式爆发</li>
-                  <li>提前结束可能会影响最终评分</li>
-                </ul>
-              </div>
-            </div>
-
-            {/* 当前未处理的影响 */}
-            {(activeConsequences.length > 0 || (lastResult?.decree_consequences?.length ?? 0) > 0) && (
-              <div style={{
-                backgroundColor: theme.bg.secondary,
-                borderRadius: '8px',
-                padding: '12px',
-                marginBottom: '20px',
-                border: `1px solid ${theme.border.light}`,
-              }}>
-                <div style={{ fontSize: '12px', color: theme.text.muted, marginBottom: '8px' }}>
-                  当前未处理的影响：{activeConsequences.length + (lastResult?.decree_consequences?.length ?? 0)} 项
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {[...activeConsequences, ...(lastResult?.decree_consequences || [])].slice(0, 5).map((c, idx) => (
-                    <span key={idx} style={{
-                      fontSize: '11px',
-                      padding: '3px 8px',
-                      backgroundColor: getSeverityInfo(c.severity).bgColor,
-                      color: getSeverityInfo(c.severity).color,
-                      borderRadius: '4px',
-                    }}>
-                      {c.title}
-                    </span>
-                  ))}
-                  {[...activeConsequences, ...(lastResult?.decree_consequences || [])].length > 5 && (
-                    <span style={{
-                      fontSize: '11px',
-                      padding: '3px 8px',
-                      backgroundColor: theme.bg.secondary,
-                      color: theme.text.muted,
-                      borderRadius: '4px',
-                    }}>
-                      +{[...activeConsequences, ...(lastResult?.decree_consequences || [])].length - 5} 项
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button
-                onClick={() => setShowEndChapterConfirm(false)}
-                disabled={endingChapter}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  backgroundColor: theme.bg.secondary,
-                  color: theme.text.primary,
-                  border: `1px solid ${theme.border.medium}`,
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  cursor: endingChapter ? 'not-allowed' : 'pointer',
-                }}
-              >
-                取消
-              </button>
-              <button
-                onClick={handleEndChapterEarly}
-                disabled={endingChapter}
-                style={{
-                  flex: 1,
-                  padding: '14px',
-                  background: endingChapter
-                    ? theme.border.medium
-                    : `linear-gradient(135deg, ${theme.status.warning} 0%, #F59E0B 100%)`,
-                  color: endingChapter ? theme.text.muted : '#FFFFFF',
-                  border: 'none',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: 'bold',
-                  cursor: endingChapter ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {endingChapter ? '结束中...' : '确认结束'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

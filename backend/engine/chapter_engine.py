@@ -5,6 +5,7 @@
 from typing import Optional, List, Dict, Any
 import json
 import re
+import uuid
 from openai import AsyncOpenAI
 from config import settings
 from models import GameState, ChapterLibrary, ChapterID, Chapter
@@ -85,6 +86,14 @@ class ChapterEngine:
 
     async def generate_chapter_opening(self, chapter: Chapter, game_state: GameState) -> str:
         """生成关卡开场白"""
+        # [即时标记系统] 获取活动中的状态标记
+        active_flags = game_state.get_active_flags()
+        flags_context = ""
+        if active_flags:
+            flags_context = "\n\n【当前生效的状态效果】\n"
+            for flag in active_flags:
+                flags_context += f"- {flag.name}: {flag.effect_on_scene}\n"
+
         prompt = f"""你是一个古典风格的叙事者，正在为一款权力博弈游戏开场。
 
 关卡：{chapter.name} - {chapter.subtitle}
@@ -98,9 +107,10 @@ class ChapterEngine:
 - 畏惧值: {game_state.power.fear:.0f}%
 - 爱戴值: {game_state.power.love:.0f}%
 - 信用分: {game_state.credit_score:.0f}
-
+{flags_context}
 请用2-3段话，以第二人称"你"来叙述，营造紧张而庄严的气氛。
-风格要求：古典文言白话混合，有历史感，突出困境的紧迫性。"""
+风格要求：古典文言白话混合，有历史感，突出困境的紧迫性。
+{"注意：你需要在叙述中自然地体现当前生效的状态效果对场景的影响。" if active_flags else ""}"""
 
         try:
             print(f"[ChapterEngine] 生成关卡开场白...")
@@ -130,20 +140,31 @@ class ChapterEngine:
         fox_rel = game_state.relations.get("fox")
         balance_rel = game_state.relations.get("balance")
 
+        # [背叛机制] 检查是否有顾问可能背叛
+        betrayal_warnings = self._check_betrayal_risks(game_state)
+
+        # [把柄系统] 检查是否有顾问会使用把柄
+        leverage_effects = await self._check_leverage_usage(game_state, chapter)
+
+        # [信用系统] 信用分数影响顾问态度
+        credit_modifier = self._get_credit_modifier(game_state.credit_score)
+
         # 基础建议
         debate = {
             "lion": {
                 "suggestion": chapter.lion_suggestion.suggestion,
                 "reasoning": chapter.lion_suggestion.reasoning,
-                "tone": self._get_advisor_tone("lion", lion_rel),
+                "tone": self._get_advisor_tone("lion", lion_rel, credit_modifier),
                 "trust_level": lion_rel.trust if lion_rel else 50,
+                "will_betray": lion_rel.will_betray() if lion_rel else False,
             },
             "fox": {
                 "suggestion": chapter.fox_suggestion.suggestion,
                 "reasoning": chapter.fox_suggestion.reasoning,
-                "tone": self._get_advisor_tone("fox", fox_rel),
+                "tone": self._get_advisor_tone("fox", fox_rel, credit_modifier),
                 "trust_level": fox_rel.trust if fox_rel else 50,
                 "has_leverage": len(game_state.get_leverages_by_holder("fox")) > 0,
+                "will_betray": fox_rel.will_betray() if fox_rel else False,
             },
         }
 
@@ -151,25 +172,107 @@ class ChapterEngine:
             debate["balance"] = {
                 "suggestion": chapter.balance_suggestion.suggestion,
                 "reasoning": chapter.balance_suggestion.reasoning,
-                "tone": self._get_advisor_tone("balance", balance_rel),
+                "tone": self._get_advisor_tone("balance", balance_rel, credit_modifier),
                 "trust_level": balance_rel.trust if balance_rel else 50,
+                "will_betray": balance_rel.will_betray() if balance_rel else False,
             }
+
+        # 添加系统警告
+        debate["system_warnings"] = {
+            "betrayal_risks": betrayal_warnings,
+            "leverage_effects": leverage_effects,
+            "credit_warning": self._get_credit_warning(game_state.credit_score),
+        }
 
         # 生成动态对话
         debate["dynamic_dialogue"] = await self._generate_debate_dialogue(chapter, game_state)
 
         return debate
 
-    def _get_advisor_tone(self, advisor: str, relation) -> str:
-        """根据关系获取顾问语气"""
+    def _check_betrayal_risks(self, game_state: GameState) -> List[Dict[str, Any]]:
+        """[背叛机制] 检查所有顾问的背叛风险"""
+        warnings = []
+        for advisor, relation in game_state.relations.items():
+            if relation.will_betray():
+                warnings.append({
+                    "advisor": advisor,
+                    "risk_level": "HIGH" if relation.loyalty < 20 else "MEDIUM",
+                    "reason": f"信任度: {relation.trust:.0f}, 忠诚度: {relation.loyalty:.0f}",
+                })
+        return warnings
+
+    async def _check_leverage_usage(self, game_state: GameState, chapter: Chapter) -> List[Dict[str, Any]]:
+        """[把柄系统] 检查顾问是否会在本回合使用把柄"""
+        leverage_effects = []
+
+        for advisor in ["lion", "fox", "balance"]:
+            leverages = game_state.get_leverages_by_holder(advisor)
+            if not leverages:
+                continue
+
+            relation = game_state.relations.get(advisor)
+            # 当信任度低且有把柄时，顾问可能使用把柄
+            if relation and relation.trust < 30 and len(leverages) > 0:
+                # 选择最严重的把柄
+                most_severe = max(leverages, key=lambda x: x.severity)
+                leverage_effects.append({
+                    "advisor": advisor,
+                    "leverage_type": most_severe.type,
+                    "description": most_severe.description,
+                    "severity": most_severe.severity,
+                    "will_use": relation.trust < 0,  # 信任度为负时会使用
+                })
+
+        return leverage_effects
+
+    def _get_credit_modifier(self, credit_score: float) -> str:
+        """[信用系统] 根据信用分数获取态度修正"""
+        if credit_score >= 80:
+            return "respectful"  # 尊敬
+        elif credit_score >= 60:
+            return "neutral"  # 中立
+        elif credit_score >= 40:
+            return "skeptical"  # 怀疑
+        elif credit_score >= 20:
+            return "distrustful"  # 不信任
+        else:
+            return "contemptuous"  # 轻蔑
+
+    def _get_credit_warning(self, credit_score: float) -> Optional[str]:
+        """[信用系统] 获取信用警告"""
+        if credit_score < 20:
+            return "⚠️ 信用破产：顾问们不再相信你的承诺"
+        elif credit_score < 40:
+            return "⚠️ 信用危机：顾问们对你的承诺持怀疑态度"
+        elif credit_score < 60:
+            return "信用下降：继续违背承诺将失去顾问信任"
+        return None
+
+    def _get_advisor_tone(self, advisor: str, relation, credit_modifier: str = "neutral") -> str:
+        """根据关系和信用获取顾问语气"""
         if not relation:
             return "neutral"
 
-        if relation.trust > 70:
+        # [信用系统] 信用分数影响基础语气
+        credit_penalty = 0
+        if credit_modifier == "contemptuous":
+            credit_penalty = -30
+        elif credit_modifier == "distrustful":
+            credit_penalty = -20
+        elif credit_modifier == "skeptical":
+            credit_penalty = -10
+
+        effective_trust = relation.trust + credit_penalty
+
+        # [背叛机制] 如果顾问可能背叛，语气变得更危险
+        if relation.will_betray():
+            return "treacherous"  # 暗藏杀机
+
+        if effective_trust > 70:
             return "loyal"
-        elif relation.trust > 30:
+        elif effective_trust > 30:
             return "professional"
-        elif relation.trust > -30:
+        elif effective_trust > -30:
             return "cautious"
         else:
             return "hostile"
@@ -178,6 +281,27 @@ class ChapterEngine:
         """生成议会辩论对话"""
         # 检查是否有顾问冲突
         has_conflict = chapter.id in [ChapterID.CHAPTER_3, ChapterID.CHAPTER_4]
+
+        # [即时标记系统] 获取活动中的状态标记
+        active_flags = game_state.get_active_flags()
+        flags_context = ""
+        if active_flags:
+            flags_context = "\n【当前生效的状态效果】（顾问会在对话中提及这些效果）\n"
+            for flag in active_flags:
+                flags_context += f"- {flag.name}: {flag.description}\n"
+
+        # [背叛机制] 检查顾问背叛风险
+        betrayal_warning = ""
+        for advisor in ["lion", "fox", "balance"]:
+            relation = game_state.relations.get(advisor)
+            if relation and relation.will_betray():
+                advisor_names = {"lion": "狮子", "fox": "狐狸", "balance": "天平"}
+                betrayal_warning += f"\n⚠️ {advisor_names[advisor]}的忠诚度极低，可能会在对话中流露出不满或暗示背叛。"
+
+        # [信用系统] 检查信用状态
+        credit_context = ""
+        if game_state.credit_score < 40:
+            credit_context = f"\n⚠️ 君主的信用分数很低({game_state.credit_score:.0f})，顾问们对你的承诺持怀疑态度，会在对话中表现出来。"
 
         prompt = f"""你是《君主论》博弈游戏的对话生成器。
 
@@ -193,7 +317,7 @@ class ChapterEngine:
 - 狮子信任度: {game_state.relations.get("lion").trust if game_state.relations.get("lion") else 50}
 - 狐狸信任度: {game_state.relations.get("fox").trust if game_state.relations.get("fox") else 50}
 - 天平信任度: {game_state.relations.get("balance").trust if game_state.relations.get("balance") else 50}
-
+{flags_context}{betrayal_warning}{credit_context}
 {"注意：本关卡存在顾问冲突，狮子和狐狸可能互相攻击。" if has_conflict else ""}
 
 请生成一段议会辩论对话（3-5轮），格式如下：
@@ -208,7 +332,9 @@ class ChapterEngine:
 2. 狮子简洁有力，狐狸绵里藏针，天平客观公正
 3. 体现他们之间的观点冲突
 4. 最后留下悬念等待君主决断
-5. 只返回JSON数组"""
+5. {"必须在对话中自然体现当前生效的状态效果" if active_flags else ""}
+6. {"低信任度或可能背叛的顾问应表现出冷淡或敌意" if betrayal_warning else ""}
+7. 只返回JSON数组"""
 
         try:
             print(f"[ChapterEngine] 生成议会辩论对话...")
@@ -303,11 +429,32 @@ class ChapterEngine:
                 elif advisor != followed_advisor and analysis.get("rejected_advisor") == advisor:
                     game_state.relations[advisor] = game_state.relations[advisor].apply_delta(-3, -2)
 
+        # [把柄系统] 检查并处理把柄使用
+        leverage_used = await self._process_leverage_usage(game_state, player_input, analysis)
+
+        # [信用系统] 低信用影响顾问反应
+        if game_state.credit_score < 40:
+            # 所有顾问的忠诚度略微下降
+            for advisor in ["lion", "fox", "balance"]:
+                game_state.relations[advisor] = game_state.relations[advisor].apply_delta(0, -1)
+
+        # [危机系统] 检查玩家决策是否解决了某个危机
+        resolved_crises = await self._check_crisis_resolution(game_state, player_input, analysis)
+
+        # [危机系统] 更新危机状态（倒计时、惩罚）
+        triggered_crises = game_state.tick_crises()
+
         # 进入下一回合
         game_state.next_turn()
 
-        # 检查关卡结束条件
+        # 检查关卡结束条件（包括危机触发导致的失败）
         chapter_result = self._check_chapter_conditions(game_state, chapter)
+
+        # [危机系统] 如果有危机自动触发，可能导致游戏结束
+        if triggered_crises and not chapter_result.get("chapter_ended"):
+            crisis_failure = self._process_triggered_crises(game_state, triggered_crises)
+            if crisis_failure:
+                chapter_result = crisis_failure
 
         # 生成政令后续影响
         decree_consequences = await self.generate_decree_consequences(
@@ -316,6 +463,21 @@ class ChapterEngine:
             decision_analysis=analysis,
             chapter=chapter,
         )
+
+        # [危机系统] 将新的后果添加到危机列表
+        for consequence in decree_consequences:
+            if consequence.get("requires_action") or consequence.get("severity") in ["high", "critical"]:
+                game_state.add_crisis(
+                    crisis_id=consequence.get("id", str(uuid.uuid4())),
+                    title=consequence.get("title", "未知危机"),
+                    description=consequence.get("description", ""),
+                    severity=consequence.get("severity", "medium"),
+                    crisis_type=consequence.get("type", "political"),
+                    requires_action=consequence.get("requires_action", False),
+                    deadline_turns=consequence.get("deadline_turns", 3),
+                    auto_trigger_effect=consequence.get("auto_trigger_effect"),
+                    unresolved_penalty=consequence.get("unresolved_penalty"),
+                )
 
         # [因果系统] 分析决策并生成伏笔种子
         causal_seeds = await self.analyze_decision_for_seeds(
@@ -339,7 +501,203 @@ class ChapterEngine:
             "causal_update": {
                 "add_seeds": causal_seeds,  # 新创建的伏笔种子
             } if causal_seeds else None,
+            "leverage_used": leverage_used,  # [把柄系统] 把柄使用结果
+            "credit_warning": self._get_credit_warning(game_state.credit_score),  # [信用系统] 信用警告
+            "resolved_crises": resolved_crises,  # [危机系统] 本回合解决的危机
+            "triggered_crises": [c["title"] for c in triggered_crises],  # [危机系统] 自动触发的危机
+            "active_crises": game_state.get_active_crises(),  # [危机系统] 当前活动危机
+            "overdue_warning": [c["title"] for c in game_state.get_overdue_crises()],  # [危机系统] 即将超时的危机
         }
+
+    async def _check_crisis_resolution(
+        self,
+        game_state: GameState,
+        player_input: str,
+        decision_analysis: dict,
+    ) -> List[str]:
+        """[危机系统] 检查玩家的决策是否解决了某个危机"""
+        resolved = []
+        active_crises = game_state.get_active_crises()
+
+        if not active_crises:
+            return resolved
+
+        # 使用 AI 判断决策是否针对某个危机
+        prompt = f"""分析玩家的政令是否解决了以下危机中的某一个。
+
+玩家政令：{player_input}
+
+当前待处理的危机：
+{json.dumps([{"id": c["id"], "title": c["title"], "description": c["description"]} for c in active_crises], ensure_ascii=False, indent=2)}
+
+判断标准：
+1. 政令必须直接针对该危机的核心问题
+2. 政令的措施必须是合理有效的
+3. 如果政令只是间接相关或敷衍，不算解决
+
+请返回 JSON 格式：
+{{
+  "resolved_crisis_ids": ["解决的危机ID列表"],
+  "reasoning": "判断理由"
+}}
+
+如果没有解决任何危机，返回空列表。只返回 JSON。"""
+
+        try:
+            response = await self.ai_client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            response_text = response.content[0].text.strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+
+            result = json.loads(response_text)
+            resolved_ids = result.get("resolved_crisis_ids", [])
+
+            for crisis_id in resolved_ids:
+                if game_state.resolve_crisis(crisis_id):
+                    # 找到对应的危机标题
+                    for c in active_crises:
+                        if c["id"] == crisis_id:
+                            resolved.append(c["title"])
+                            break
+
+            print(f"[ChapterEngine][危机系统] 解决了 {len(resolved)} 个危机: {resolved}")
+
+        except Exception as e:
+            print(f"[ChapterEngine][危机系统] 判断危机解决失败: {e}")
+
+        return resolved
+
+    def _process_triggered_crises(
+        self,
+        game_state: GameState,
+        triggered_crises: List[dict],
+    ) -> Optional[Dict[str, Any]]:
+        """[危机系统] 处理自动触发的危机，可能导致游戏失败"""
+        for crisis in triggered_crises:
+            severity = crisis.get("severity", "medium")
+            crisis_type = crisis.get("type", "political")
+
+            # 应用触发效果
+            trigger_impacts = {
+                "military": {"authority": -20, "fear": 10, "love": -15},
+                "political": {"authority": -25, "love": -10},
+                "economic": {"authority": -10, "love": -20},
+                "social": {"love": -25, "fear": -5},
+                "diplomatic": {"authority": -15, "love": -10},
+            }
+
+            impact = trigger_impacts.get(crisis_type, {"authority": -15, "love": -15})
+
+            # 严重程度放大
+            severity_multiplier = {"low": 0.5, "medium": 1, "high": 1.5, "critical": 2}
+            multiplier = severity_multiplier.get(severity, 1)
+
+            game_state.power = game_state.power.apply_delta(
+                delta_a=int(impact.get("authority", 0) * multiplier),
+                delta_f=int(impact.get("fear", 0) * multiplier),
+                delta_l=int(impact.get("love", 0) * multiplier),
+            )
+
+            print(f"[ChapterEngine][危机系统] 危机自动触发: {crisis['title']}")
+
+            # Critical 危机触发可能导致游戏失败
+            if severity == "critical":
+                failure_reasons = {
+                    "military": "兵变：军队哗变，将领们包围了王宫",
+                    "political": "政变：大臣们联合起来，架空了你的权力",
+                    "economic": "财政崩溃：国库空虚，无力维持统治",
+                    "social": "民变：愤怒的民众冲击了王宫",
+                    "diplomatic": "外敌入侵：外交失败导致敌国入侵",
+                }
+
+                reason = failure_reasons.get(crisis_type, f"危机失控：{crisis['title']}")
+
+                if game_state.power.authority <= 10 or game_state.power.love <= 10:
+                    game_state.fail_chapter(reason)
+                    return {
+                        "chapter_ended": True,
+                        "victory": False,
+                        "reason": reason,
+                        "triggered_by": "crisis_escalation",
+                        "crisis_title": crisis["title"],
+                    }
+
+        return None
+
+    async def _process_leverage_usage(
+        self,
+        game_state: GameState,
+        player_input: str,
+        decision_analysis: dict,
+    ) -> Optional[Dict[str, Any]]:
+        """[把柄系统] 处理顾问使用把柄的情况"""
+        import random
+
+        for advisor in ["lion", "fox", "balance"]:
+            leverages = game_state.get_leverages_by_holder(advisor)
+            if not leverages:
+                continue
+
+            relation = game_state.relations.get(advisor)
+            if not relation:
+                continue
+
+            # 当信任度低于0且玩家拒绝了该顾问的建议时，可能使用把柄
+            rejected = decision_analysis.get("rejected_advisor") == advisor
+            should_use = relation.trust < 0 and (rejected or relation.trust < -30)
+
+            if not should_use:
+                continue
+
+            # 使用概率：信任度越低，越可能使用
+            use_probability = min(0.8, abs(relation.trust) / 100)
+            if random.random() > use_probability:
+                continue
+
+            # 选择最严重的把柄使用
+            most_severe = max(leverages, key=lambda x: x.severity)
+            used_leverage = game_state.use_leverage(most_severe.id)
+
+            if used_leverage:
+                # 把柄效果：影响权力值
+                severity_impact = {
+                    1: {"authority": -2, "love": -3},
+                    2: {"authority": -3, "love": -4},
+                    3: {"authority": -4, "love": -5},
+                    4: {"authority": -5, "love": -6},
+                    5: {"authority": -6, "love": -8},
+                    6: {"authority": -8, "love": -10},
+                    7: {"authority": -10, "love": -12},
+                    8: {"authority": -12, "love": -15},
+                    9: {"authority": -15, "love": -18},
+                    10: {"authority": -20, "love": -25},
+                }
+                impact = severity_impact.get(used_leverage.severity, {"authority": -5, "love": -8})
+
+                # 应用影响
+                game_state.power = game_state.power.apply_delta(
+                    delta_a=impact["authority"],
+                    delta_l=impact["love"],
+                )
+
+                advisor_names = {"lion": "狮子", "fox": "狐狸", "balance": "天平"}
+                return {
+                    "advisor": advisor,
+                    "advisor_name": advisor_names[advisor],
+                    "leverage_type": used_leverage.type,
+                    "description": used_leverage.description,
+                    "impact": impact,
+                    "narrative": f"{advisor_names[advisor]}利用了你的把柄：{used_leverage.description}",
+                }
+
+        return None
 
     async def _analyze_decision(self, player_input: str, chapter: Chapter) -> dict:
         """分析玩家决策"""
@@ -367,10 +725,19 @@ class ChapterEngine:
   "is_secret_action": true/false,
   "leak_probability": 0.3,
   "impact": {{"authority": 数值, "fear": 数值, "love": 数值}},
-  "analysis": "简短分析"
+  "analysis": "简短分析",
+  "machiavelli_assessment": "用一句话从马基雅维利《君主论》的视角评价此决策，例如：'此乃狐狸之计，以柔克刚' 或 '此举过于仁慈，君主论有云...'",
+  "prince_quote": "引用一句最相关的《君主论》名言（中文）"
 }}
 
-数值范围：-20到+20"""
+数值范围：-20到+20
+
+《君主论》核心观点参考：
+- 被人畏惧比受人爱戴更安全
+- 君主必须学会如何做不善良的事
+- 明智的君主宁可被人视为吝啬
+- 伤害人要一次做尽，恩惠要慢慢施予
+- 君主必须既是狮子又是狐狸"""
 
         try:
             print(f"[ChapterEngine] 分析玩家决策: {player_input[:50]}...")
@@ -413,6 +780,7 @@ class ChapterEngine:
             "chapter_ended": False,
             "victory": False,
             "reason": None,
+            "triggered_by": None,  # 记录触发原因
         }
 
         # 检查失败条件
@@ -420,6 +788,7 @@ class ChapterEngine:
             result["chapter_ended"] = True
             result["victory"] = False
             result["reason"] = "篡位：你的掌控力归零，被权臣架空"
+            result["triggered_by"] = "authority_zero"
             game_state.fail_chapter(result["reason"])
             return result
 
@@ -427,6 +796,7 @@ class ChapterEngine:
             result["chapter_ended"] = True
             result["victory"] = False
             result["reason"] = "暴乱：民众的愤怒彻底爆发"
+            result["triggered_by"] = "love_zero"
             game_state.fail_chapter(result["reason"])
             return result
 
@@ -434,6 +804,27 @@ class ChapterEngine:
             result["chapter_ended"] = True
             result["victory"] = False
             result["reason"] = "暗杀：高压统治引发刺杀"
+            result["triggered_by"] = "assassination"
+            game_state.fail_chapter(result["reason"])
+            return result
+
+        # [信用系统] 信用破产检查
+        if game_state.credit_score <= 0:
+            result["chapter_ended"] = True
+            result["victory"] = False
+            result["reason"] = "信用破产：无人再相信你的承诺，统治根基动摇"
+            result["triggered_by"] = "credit_bankruptcy"
+            game_state.fail_chapter(result["reason"])
+            return result
+
+        # [背叛机制] 检查顾问背叛
+        betrayal_result = self._check_advisor_betrayal(game_state)
+        if betrayal_result:
+            result["chapter_ended"] = True
+            result["victory"] = False
+            result["reason"] = betrayal_result["reason"]
+            result["triggered_by"] = "betrayal"
+            result["betrayer"] = betrayal_result["betrayer"]
             game_state.fail_chapter(result["reason"])
             return result
 
@@ -444,15 +835,47 @@ class ChapterEngine:
                 result["chapter_ended"] = True
                 result["victory"] = True
                 result["reason"] = "关卡完成"
-                score = int(game_state.power.authority + game_state.power.love - game_state.power.fear * 0.5)
+                # [信用系统] 信用分数影响最终得分
+                credit_bonus = (game_state.credit_score - 50) * 0.5
+                score = int(game_state.power.authority + game_state.power.love - game_state.power.fear * 0.5 + credit_bonus)
                 game_state.complete_chapter("survived", score)
             else:
                 result["chapter_ended"] = True
                 result["victory"] = False
                 result["reason"] = "统治崩溃：无法维持平衡"
+                result["triggered_by"] = "balance_failure"
                 game_state.fail_chapter(result["reason"])
 
         return result
+
+    def _check_advisor_betrayal(self, game_state: GameState) -> Optional[Dict[str, Any]]:
+        """[背叛机制] 检查是否有顾问实施背叛"""
+        import random
+
+        for advisor, relation in game_state.relations.items():
+            if not relation.will_betray():
+                continue
+
+            # 背叛概率：忠诚度越低，概率越高
+            # 基础概率 = (30 - loyalty) / 100，最高30%
+            base_probability = max(0, (30 - relation.loyalty) / 100)
+
+            # 如果信任度为负，概率加倍
+            if relation.trust < 0:
+                base_probability *= 2
+
+            # 检查是否触发背叛
+            if random.random() < base_probability:
+                advisor_names = {"lion": "狮子", "fox": "狐狸", "balance": "天平"}
+                betrayal_methods = {
+                    "lion": "军事政变：狮子调动亲信军队包围了王宫",
+                    "fox": "宫廷阴谋：狐狸散布谣言，煽动贵族反叛",
+                    "balance": "民众起义：天平联合民众，揭露了你的暴行",
+                }
+                return {
+                    "betrayer": advisor,
+                    "reason": f"背叛：{advisor_names[advisor]}的背叛 - {betrayal_methods[advisor]}",
+                }
 
     async def generate_advisor_responses(
         self,
@@ -489,12 +912,37 @@ class ChapterEngine:
 
         advisor_names = {"lion": "狮子", "fox": "狐狸", "balance": "天平"}
         advisor_styles = {
-            "lion": "简洁有力，军人作风，直接表达态度",
-            "fox": "绵里藏针，若即若离，喜欢暗示",
-            "balance": "客观公正，引用数据，关心民众",
+            "lion": "简洁有力，军人作风，直接表达态度，常引用马基雅维利关于武力和果断的观点",
+            "fox": "绵里藏针，若即若离，喜欢暗示，熟稔马基雅维利关于权谋和欺骗的智慧",
+            "balance": "客观公正，引用数据，关心民众，会从马基雅维利关于民心和稳定的角度分析",
         }
 
-        prompt = f"""你是《君主论》游戏中的{advisor_names[advisor]}顾问。
+        # 《君主论》经典引用库
+        machiavelli_quotes = {
+            "lion": [
+                "正如马基雅维利所言：'被人畏惧比受人爱戴更安全'",
+                "马基雅维利教导我们：'当断不断，反受其乱'",
+                "《君主论》有云：'一位君主必须学会不做好人'",
+                "正所谓：'伤害人的时候要一次做尽，恩惠则要慢慢施予'",
+            ],
+            "fox": [
+                "马基雅维利曾说：'狮子不能保护自己免受陷阱，狐狸不能抵御狼群'",
+                "《君主论》告诫：'善于欺骗的人总能找到愿意被欺骗的人'",
+                "正如马基雅维利所言：'君主必须既是狮子又是狐狸'",
+                "记住：'人们的眼睛只看表象，而双手才触及本质'",
+            ],
+            "balance": [
+                "马基雅维利提醒我们：'最坚固的堡垒是不被人民憎恨'",
+                "《君主论》有言：'君主应当关心百姓，使他们不致绝望'",
+                "正如马基雅维利所说：'明智的君主宁可被人视为吝啬，也不愿为慷慨所累'",
+                "切记：'以民为本，方能长治久安'",
+            ],
+        }
+
+        import random
+        quote = random.choice(machiavelli_quotes.get(advisor, ["《君主论》如是说"]))
+
+        prompt = f"""你是《君主论》博弈游戏中的{advisor_names[advisor]}顾问，深谙马基雅维利的政治智慧。
 
 你的风格：{advisor_styles[advisor]}
 你与君主的关系：信任度 {relation.trust if relation else 50}，忠诚度 {relation.loyalty if relation else 50}
@@ -506,9 +954,11 @@ class ChapterEngine:
 
 请生成你的回应（2-3句话）：
 1. 表达对决策的态度
-2. 根据你的人设做出评价
+2. 【重要】自然地引用或化用《君主论》/马基雅维利的观点来评价，可以参考："{quote}"
 3. {"如果信任度低于0，暗示你的不满" if relation and relation.trust < 0 else ""}
-4. {"如果你有把柄，可以隐晦提及" if has_leverage else ""}"""
+4. {"如果你有把柄，可以隐晦提及" if has_leverage else ""}
+
+注意：回应要有深度，体现出你对权谋之术的理解。"""
 
         try:
             print(f"[ChapterEngine] 生成 {advisor} 顾问回应...")
@@ -1375,6 +1825,9 @@ class ChapterEngine:
                     advisor_reactions=result.get("advisor_reactions", {}),
                 )
 
+                # [即时标记系统] 根据种子类型创建即时标记
+                self._create_flag_from_seed(game_state, seed, result)
+
                 # 应用额外影响
                 impact = result.get("additional_impact", {})
                 if impact:
@@ -1403,6 +1856,88 @@ class ChapterEngine:
             traceback.print_exc()
 
         return None
+
+    def _create_flag_from_seed(
+        self,
+        game_state: GameState,
+        seed: ShadowSeed,
+        echo_result: Dict[str, Any],
+    ) -> None:
+        """[即时标记系统] 根据触发的种子创建即时状态标记"""
+        from models.game_state import ImmediateFlagType
+
+        # 根据种子类型创建不同的即时标记
+        flag_configs = {
+            "DECEPTION": {
+                "name": "信任危机",
+                "description": "过去的欺骗行为被揭露",
+                "effect_on_scene": "顾问们对你的话语持怀疑态度",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 3,
+                "modifiers": {"trust_penalty": -10},
+            },
+            "VIOLENCE": {
+                "name": "血腥阴影",
+                "description": "过去的暴力行为留下的创伤",
+                "effect_on_scene": "民众和官员都对你心怀畏惧，但也暗藏仇恨",
+                "type": ImmediateFlagType.MODIFIER,
+                "duration_turns": 4,
+                "modifiers": {"fear_bonus": 5, "love_penalty": -5},
+            },
+            "BROKEN_PROMISE": {
+                "name": "失信之名",
+                "description": "违背的承诺被人记起",
+                "effect_on_scene": "你的每一个承诺都被人怀疑",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 5,
+                "modifiers": {"credit_penalty": -10},
+            },
+            "MERCY": {
+                "name": "软弱印象",
+                "description": "过去的仁慈被视为软弱",
+                "effect_on_scene": "有人试图利用你的仁慈",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 2,
+                "modifiers": {"authority_penalty": -5},
+            },
+            "DEBT": {
+                "name": "债务追讨",
+                "description": "旧债到期，债主登门",
+                "effect_on_scene": "必须处理拖欠的债务",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 3,
+                "modifiers": {"resource_penalty": -15},
+            },
+            "CORRUPTION": {
+                "name": "腐败丑闻",
+                "description": "腐败行为被曝光",
+                "effect_on_scene": "民众对朝廷的信任大降",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 4,
+                "modifiers": {"love_penalty": -10, "authority_penalty": -5},
+            },
+            "BETRAYAL": {
+                "name": "背叛者的报复",
+                "description": "曾被背叛的盟友归来",
+                "effect_on_scene": "旧敌在暗中活动",
+                "type": ImmediateFlagType.DEBUFF,
+                "duration_turns": 3,
+                "modifiers": {"danger_bonus": 20},
+            },
+        }
+
+        config = flag_configs.get(seed.tag.value)
+        if config:
+            game_state.add_immediate_flag(
+                name=config["name"],
+                description=config["description"],
+                effect_on_scene=config["effect_on_scene"],
+                flag_type=config["type"],
+                duration_turns=config["duration_turns"],
+                modifiers=config["modifiers"],
+                source_seed_id=seed.id,
+            )
+            print(f"[ChapterEngine][即时标记] 创建标记: {config['name']}")
 
     async def get_scene_with_echoes(
         self,

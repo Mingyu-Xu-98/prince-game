@@ -17,6 +17,7 @@ interface ChapterSelectProps {
   onModelChange?: (model: string) => void;
   onExit?: () => void;
   pendingConsequences?: PendingConsequence[];
+  onNewGame?: () => void;  // 新游戏回调
 }
 
 const AVAILABLE_MODELS = [
@@ -48,6 +49,7 @@ export function ChapterSelect({
   onModelChange,
   onExit,
   pendingConsequences = [],
+  onNewGame,
 }: ChapterSelectProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -176,9 +178,32 @@ export function ChapterSelect({
             <span className="stat-label">信用</span>
             <span className="stat-value" style={{ color: theme.accent.gold }}>{gameState.credit_score.toFixed(0)}</span>
           </div>
+          {/* 新游戏按钮 */}
+          {onNewGame && (
+            <button
+              onClick={onNewGame}
+              style={{
+                padding: '8px 16px',
+                marginLeft: '16px',
+                backgroundColor: 'transparent',
+                border: `1px solid ${theme.border.medium}`,
+                borderRadius: '6px',
+                color: theme.text.secondary,
+                fontSize: '12px',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="重新开始新游戏"
+            >
+              🔄 新游戏
+            </button>
+          )}
           {/* 设置按钮 */}
           {onApiKeyChange && (
-            <div style={{ position: 'relative', marginLeft: '16px' }}>
+            <div style={{ position: 'relative', marginLeft: '8px' }}>
               <button
                 onClick={() => setShowSettings(!showSettings)}
                 className="settings-btn"
