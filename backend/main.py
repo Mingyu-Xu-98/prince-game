@@ -17,6 +17,7 @@ from engine import (
     judgment_engine, advanced_dialogue_generator,
 )
 from storage import InMemorySessionStore
+from routes.skills_routes import router as skills_router
 
 
 # 全局存储
@@ -47,6 +48,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册技能包路由
+app.include_router(skills_router, prefix="/api")
 
 
 # ==================== 请求/响应模型 ====================

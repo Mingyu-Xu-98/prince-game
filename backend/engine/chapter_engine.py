@@ -6,10 +6,12 @@ from typing import Optional, List, Dict, Any
 import json
 import re
 import uuid
+import random
 from openai import AsyncOpenAI
 from config import settings
 from models import GameState, ChapterLibrary, ChapterID, Chapter
 from models.game_state import DecisionRecord, ShadowSeed, ShadowSeedTag, ShadowSeedSeverity, TriggeredEcho
+from services.prince_skills_service import get_skills_service
 
 
 class ChapterEngine:
@@ -701,6 +703,18 @@ class ChapterEngine:
 
     async def _analyze_decision(self, player_input: str, chapter: Chapter) -> dict:
         """分析玩家决策"""
+        # 从技能包服务获取相关策略
+        skills_service = get_skills_service()
+        scenario = skills_service.detect_scenario(f"{chapter.dilemma} {player_input}")
+        relevant_skills = skills_service.get_skills_for_scenario(scenario)
+
+        # 构建技能包参考内容
+        skill_references = ""
+        if relevant_skills:
+            skill_references = "\n\n【相关《君主论》策略技能包】\n"
+            for skill in relevant_skills[:2]:  # 最多引用2个技能
+                skill_references += f"- {skill.name}: {skill.description[:150]}...\n"
+
         prompt = f"""分析玩家在《君主论》博弈游戏中的决策。
 
 关卡：{chapter.name}
@@ -712,6 +726,7 @@ class ChapterEngine:
 - 天平：{chapter.balance_suggestion.suggestion if chapter.balance_suggestion else "无"}
 
 玩家决策："{player_input}"
+{skill_references}
 
 请分析并返回JSON：
 {{
@@ -726,8 +741,9 @@ class ChapterEngine:
   "leak_probability": 0.3,
   "impact": {{"authority": 数值, "fear": 数值, "love": 数值}},
   "analysis": "简短分析",
-  "machiavelli_assessment": "用一句话从马基雅维利《君主论》的视角评价此决策，例如：'此乃狐狸之计，以柔克刚' 或 '此举过于仁慈，君主论有云...'",
-  "prince_quote": "引用一句最相关的《君主论》名言（中文）"
+  "machiavelli_assessment": "用一句话从马基雅维利《君主论》的视角评价此决策，可参考上面的技能包内容",
+  "prince_quote": "引用一句最相关的《君主论》名言（中文）",
+  "applied_skill": "应用的技能包名称，如果有相关的话"
 }}
 
 数值范围：-20到+20
@@ -917,7 +933,35 @@ class ChapterEngine:
             "balance": "客观公正，引用数据，关心民众，会从马基雅维利关于民心和稳定的角度分析",
         }
 
-        # 《君主论》经典引用库
+        # 从 prince-skills 技能包中获取相关引用
+        skills_service = get_skills_service()
+
+        # 根据场景检测相关技能
+        scenario = skills_service.detect_scenario(f"{chapter.dilemma} {player_input}")
+        relevant_skills = skills_service.get_skills_for_scenario(scenario)
+
+        # 根据顾问类型选择合适的技能引用
+        advisor_skill_preferences = {
+            "lion": ["military-strategy-and-defense", "power-consolidation-tactics", "machiavellian-leadership-principles"],
+            "fox": ["strategic-use-of-negative-attributes", "crowd-psychology-diplomatic-strategy", "governance-and-minister-management"],
+            "balance": ["internal-stability-management", "reputation-and-external-relations", "adapting-to-fortune-and-circumstances"],
+        }
+
+        # 尝试获取该顾问偏好的技能
+        skill_content = ""
+        preferred_skills = advisor_skill_preferences.get(advisor, [])
+        for skill_name in preferred_skills:
+            skill = skills_service.get_skill(skill_name)
+            if skill:
+                skill_content = f"【{skill.name}】{skill.description[:200]}..."
+                break
+
+        # 如果没找到偏好技能，从场景相关技能中选取
+        if not skill_content and relevant_skills:
+            skill = random.choice(relevant_skills)
+            skill_content = f"【{skill.name}】{skill.description[:200]}..."
+
+        # 《君主论》经典引用库（作为后备）
         machiavelli_quotes = {
             "lion": [
                 "正如马基雅维利所言：'被人畏惧比受人爱戴更安全'",
@@ -939,8 +983,12 @@ class ChapterEngine:
             ],
         }
 
-        import random
         quote = random.choice(machiavelli_quotes.get(advisor, ["《君主论》如是说"]))
+
+        # 构建技能包参考内容
+        skill_reference = ""
+        if skill_content:
+            skill_reference = f"\n\n【可参考的《君主论》技能包】\n{skill_content}"
 
         prompt = f"""你是《君主论》博弈游戏中的{advisor_names[advisor]}顾问，深谙马基雅维利的政治智慧。
 
@@ -951,12 +999,14 @@ class ChapterEngine:
 
 君主的决策："{player_input}"
 决策分析：{"暴力" if analysis.get("was_violent") else ""}{"欺骗" if analysis.get("was_deceptive") else ""}{"公平" if analysis.get("was_fair") else "普通"}
+{skill_reference}
 
 请生成你的回应（2-3句话）：
 1. 表达对决策的态度
 2. 【重要】自然地引用或化用《君主论》/马基雅维利的观点来评价，可以参考："{quote}"
-3. {"如果信任度低于0，暗示你的不满" if relation and relation.trust < 0 else ""}
-4. {"如果你有把柄，可以隐晦提及" if has_leverage else ""}
+3. 如果上面有【技能包】参考内容，可以将其中的策略建议融入你的评论中
+4. {"如果信任度低于0，暗示你的不满" if relation and relation.trust < 0 else ""}
+5. {"如果你有把柄，可以隐晦提及" if has_leverage else ""}
 
 注意：回应要有深度，体现出你对权谋之术的理解。"""
 
