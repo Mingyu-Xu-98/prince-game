@@ -27,8 +27,10 @@ session_store = InMemorySessionStore()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    import os
+    port = os.getenv("PORT", "8710")
     print("👁️ 影子执政者 (Shadow Regent) 服务启动...")
-    print("📍 后端地址: http://127.0.0.1:8080")
+    print(f"📍 后端地址: http://0.0.0.0:{port}")
     yield
     print("👁️ 游戏服务关闭")
 
@@ -1084,10 +1086,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # ==================== 启动入口 ====================
 
 if __name__ == "__main__":
+    import os
     import uvicorn
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8710"))
+    reload_mode = os.getenv("RELOAD", "false").lower() == "true"
+
+    print(f"📍 后端启动地址: http://{host}:{port}")
+
     uvicorn.run(
         "main:app",
-        host="127.0.0.1",
-        port=8080,
-        reload=True,
+        host=host,
+        port=port,
+        reload=reload_mode,
     )

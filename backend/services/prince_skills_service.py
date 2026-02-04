@@ -120,9 +120,17 @@ class PrinceSkillsService:
     def __init__(self, skills_dir: str = None):
         """初始化技能包服务"""
         if skills_dir is None:
-            # 默认路径：项目根目录下的 prince-skills
-            base_dir = Path(__file__).parent.parent.parent
-            skills_dir = base_dir / "prince-skills"
+            # 优先使用环境变量配置的路径（Docker 部署时使用）
+            skills_dir = os.environ.get("PRINCE_SKILLS_DIR")
+
+            if skills_dir is None:
+                # 默认路径：先尝试 /app/prince-skills (Docker)，再尝试项目根目录
+                docker_path = Path("/app/prince-skills")
+                if docker_path.exists():
+                    skills_dir = docker_path
+                else:
+                    base_dir = Path(__file__).parent.parent.parent
+                    skills_dir = base_dir / "prince-skills"
 
         self.skills_dir = Path(skills_dir)
         self.skills: Dict[str, Skill] = {}

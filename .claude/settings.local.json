@@ -15,7 +15,31 @@
       "Bash(git commit:*)",
       "Bash(git remote add:*)",
       "Bash(git branch:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "Bash(conda create:*)",
+      "Bash(conda activate:*)",
+      "Bash(source:*)",
+      "Bash(conda run:*)",
+      "Bash(/Users/xumingyu/anaconda3/bin/python:*)",
+      "Bash(/Users/xumingyu/anaconda3/bin/pip install:*)",
+      "Bash(curl:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pkill:*)",
+      "Bash(npm run build:*)",
+      "Bash(/Users/xumingyu/anaconda3/bin/python3 -m pip install:*)",
+      "Bash(/Users/xumingyu/anaconda3/bin/python3:*)",
+      "Bash(kill:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "Bash(git merge:*)",
+      "Bash(awk:*)",
+      "Bash(find:*)",
+      "Bash(gh pr create --title \"feat: 添加《君主论》风格分析和UI优化\" --body \"$\\(cat <<''EOF''\n## Summary\n- 清除关卡切换时的历史记录（回合记录、局势变化、衍生问题）\n- 后端顾问回应中添加马基雅维利语录引用\n- 决策分析增加 machiavelli_assessment 和 prince_quote 字段\n- 删除廷议页面的\"结束关卡\"按钮\n- 在关卡选择页面添加\"新游戏\"按钮\n- 重写 FinalAuditPanel，添加《君主论》风格的最终报告\n  - 根据暴力/欺骗/公正比例分析统治风格（雄狮之君、狡狐之君、完美君主、仁德之君等）\n  - 每种类型包含专属分析评语和《君主论》原文引用\n\n## Test plan\n- [ ] 测试关卡切换时历史记录是否清除\n- [ ] 测试新游戏按钮功能\n- [ ] 完成第五关后查看最终报告的君主论风格分析\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\nEOF\n\\)\")",
+      "Bash(git rm:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker compose build:*)"
     ]
   }
 }

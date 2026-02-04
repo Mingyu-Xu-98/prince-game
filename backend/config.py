@@ -1,6 +1,7 @@
 """
 游戏配置管理
 """
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -12,7 +13,17 @@ class Settings(BaseSettings):
     default_model: str = "anthropic/claude-3.5-sonnet"
 
     # Redis 配置
-    redis_url: str = "redis://localhost:6379"
+    redis_host: str = "192.168.41.96"
+    redis_port: int = 16379
+    redis_password: str = "skills2redis"
+    redis_db: int = 0
+
+    @property
+    def redis_url(self) -> str:
+        """构建 Redis URL"""
+        if self.redis_password:
+            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     # 游戏初始值
     initial_authority: float = 50.0

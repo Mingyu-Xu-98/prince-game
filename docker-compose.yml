@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  backend:
+    container_name: prince-game-backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8710:8710"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8710
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-anthropic/claude-3.5-sonnet}
+      - REDIS_HOST=${REDIS_HOST:-192.168.41.96}
+      - REDIS_PORT=${REDIS_PORT:-16379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-skills2redis}
+      - REDIS_DB=${REDIS_DB:-0}
+      - INITIAL_AUTHORITY=${INITIAL_AUTHORITY:-50.0}
+      - INITIAL_FEAR=${INITIAL_FEAR:-30.0}
+      - INITIAL_LOVE=${INITIAL_LOVE:-50.0}
+    volumes:
+      - ./prince-skills:/app/prince-skills:ro
+    restart: unless-stopped
+    networks:
+      - prince-game-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8710/api/skills/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    container_name: prince-game-frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8711:8711"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - prince-game-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8711"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  prince-game-network:
+    driver: bridge
